@@ -1,0 +1,46 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: litflow-postgres
+    environment:
+      POSTGRES_DB: ${LITFLOW_POSTGRES_DB:-litflow}
+      POSTGRES_USER: ${LITFLOW_POSTGRES_USER:-litflow}
+      POSTGRES_PASSWORD: ${LITFLOW_POSTGRES_PASSWORD:-litflow}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${LITFLOW_POSTGRES_USER:-litflow} -d ${LITFLOW_POSTGRES_DB:-litflow}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  temporal:
+    image: temporalio/auto-setup:1.25.2
+    container_name: litflow-temporal
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: ${LITFLOW_POSTGRES_PORT:-5432}
+      POSTGRES_USER: ${LITFLOW_POSTGRES_USER:-litflow}
+      POSTGRES_PWD: ${LITFLOW_POSTGRES_PASSWORD:-litflow}
+      POSTGRES_SEEDS: ${LITFLOW_POSTGRES_HOST:-postgres}
+    ports:
+      - "7233:7233"
+
+  temporal-ui:
+    image: temporalio/ui:2.31.2
+    container_name: litflow-temporal-ui
+    depends_on:
+      - temporal
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:3000
+    ports:
+      - "8233:8080"
+
+volumes:
+  pgdata:

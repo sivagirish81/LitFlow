@@ -1,0 +1,66 @@
+package workflows
+
+type CorpusIngestInput struct {
+	CorpusID              string `json:"corpus_id"`
+	InputDir              string `json:"input_dir"`
+	MaxConcurrentChildren int    `json:"max_concurrent_children"`
+	EmbedProviders        int    `json:"embed_providers"`
+	CooldownSeconds       int    `json:"cooldown_seconds"`
+}
+
+type PaperProcessInput struct {
+	CorpusID        string `json:"corpus_id"`
+	PaperPath       string `json:"paper_path"`
+	ChunkSize       int    `json:"chunk_size"`
+	ChunkOverlap    int    `json:"chunk_overlap"`
+	ChunkVersion    string `json:"chunk_version"`
+	EmbedVersion    string `json:"embed_version"`
+	EmbedProviders  int    `json:"embed_providers"`
+	CooldownSeconds int    `json:"cooldown_seconds"`
+}
+
+type SurveyBuildInput struct {
+	SurveyRunID     string   `json:"survey_run_id"`
+	CorpusID        string   `json:"corpus_id"`
+	Topics          []string `json:"topics"`
+	Questions       []string `json:"questions"`
+	EmbedProviders  int      `json:"embed_providers"`
+	LLMProviders    int      `json:"llm_providers"`
+	CooldownSeconds int      `json:"cooldown_seconds"`
+}
+
+type BackfillInput struct {
+	CorpusID    string   `json:"corpus_id"`
+	Mode        string   `json:"mode"`
+	SurveyRunID string   `json:"survey_run_id,omitempty"`
+	Topics      []string `json:"topics,omitempty"`
+	Questions   []string `json:"questions,omitempty"`
+}
+
+type PaperStatus struct {
+	PaperID     string            `json:"paper_id"`
+	PaperPath   string            `json:"paper_path"`
+	CurrentStep string            `json:"current_step"`
+	Status      string            `json:"status"`
+	FailReason  string            `json:"fail_reason,omitempty"`
+	Providers   []string          `json:"providers_used"`
+	RetryCounts map[string]int    `json:"retry_counts"`
+	Steps       map[string]string `json:"steps"`
+}
+
+type CorpusIngestProgress struct {
+	CorpusID      string            `json:"corpus_id"`
+	Total         int               `json:"total"`
+	Done          int               `json:"done"`
+	Failed        int               `json:"failed"`
+	PerPaper      map[string]string `json:"per_paper_status"`
+	ChildWorkflow map[string]string `json:"child_workflow_ids,omitempty"`
+}
+
+type SurveyProgress struct {
+	SurveyRunID string            `json:"survey_run_id"`
+	CorpusID    string            `json:"corpus_id"`
+	TotalTopics int               `json:"total_topics"`
+	DoneTopics  int               `json:"done_topics"`
+	TopicStatus map[string]string `json:"topic_status"`
+}
