@@ -86,6 +86,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/ask", s.handleAsk)
 	mux.HandleFunc("/survey", s.handleSurvey)
 	mux.HandleFunc("/survey/", s.handleSurveyScoped)
+	mux.HandleFunc("/backfill", s.handleBackfill)
+	mux.HandleFunc("/providers/embeddings", s.handleEmbeddingProviders)
+	mux.HandleFunc("/workflows/status", s.handleWorkflowStatus)
 	return withCORS(mux)
 }
 
@@ -200,6 +203,8 @@ func (s *Server) handleCorporaScoped(w http.ResponseWriter, r *http.Request) {
 			MaxConcurrentChildren: s.cfg.IngestMaxChildren,
 			EmbedProviders:        s.providers.EmbedCount(),
 			CooldownSeconds:       s.cfg.ProviderCooldownSecs,
+			ChunkVersion:          "v1",
+			EmbedVersion:          s.cfg.EmbedVersion,
 		})
 		if err != nil {
 			writeErr(w, http.StatusConflict, err)
@@ -326,9 +331,11 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		CorpusID string `json:"corpus_id"`
-		Question string `json:"question"`
-		TopK     int    `json:"top_k"`
+		CorpusID      string `json:"corpus_id"`
+		Question      string `json:"question"`
+		TopK          int    `json:"top_k"`
+		EmbedProvider string `json:"embed_provider,omitempty"`
+		EmbedVersion  string `json:"embed_version,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid json: %w", err))
@@ -343,12 +350,23 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	if req.TopK <= 0 {
 		req.TopK = 8
 	}
+	if strings.TrimSpace(req.EmbedVersion) == "" {
+		req.EmbedVersion = s.cfg.EmbedVersion
+	}
 
 	var (
 		info providers.ProviderInfo
 		err  error
 	)
 	embedOrders := s.providers.PreferredEmbedOrder()
+	preferredIdx := s.providers.FindEmbedProviderIndex(req.EmbedProvider)
+	if strings.TrimSpace(req.EmbedProvider) != "" && preferredIdx < 0 {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("unknown embed_provider: %s", req.EmbedProvider))
+		return
+	}
+	if preferredIdx >= 0 {
+		embedOrders = orderWithPreferredFirst(embedOrders, preferredIdx)
+	}
 	queryVectors := [][]float32(nil)
 	for _, idx := range embedOrders {
 		p, _ := s.providers.EmbedProviderByIndex(idx)
@@ -365,7 +383,9 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, fmt.Errorf("embedding providers unavailable"))
 		return
 	}
-	results, err := s.searcher.SearchChunks(r.Context(), req.CorpusID, queryVectors[0], req.TopK, vector.SearchFilters{})
+	results, err := s.searcher.SearchChunks(r.Context(), req.CorpusID, queryVectors[0], req.TopK, vector.SearchFilters{
+		EmbeddingVersion: req.EmbedVersion,
+	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -489,6 +509,7 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 		"citations":       citations,
 		"embed_provider":  info.Name,
 		"embed_model":     info.Model,
+		"embed_version":   req.EmbedVersion,
 		"llm_provider":    llmInfo.Name,
 		"llm_model":       llmInfo.Model,
 		"retrieved_count": len(citations),
@@ -554,6 +575,7 @@ func (s *Server) handleSurvey(w http.ResponseWriter, r *http.Request) {
 		EmbedProviders:  s.providers.EmbedCount(),
 		LLMProviders:    s.providers.LLMCount(),
 		CooldownSeconds: s.cfg.ProviderCooldownSecs,
+		EmbedVersion:    s.cfg.EmbedVersion,
 	})
 	if err != nil {
 		writeErr(w, http.StatusConflict, err)
@@ -609,6 +631,183 @@ func (s *Server) handleSurveyScoped(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeErr(w, http.StatusNotFound, fmt.Errorf("not found"))
 	}
+}
+
+func (s *Server) handleBackfill(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		return
+	}
+	var req struct {
+		CorpusID      string   `json:"corpus_id"`
+		Mode          string   `json:"mode"`
+		SurveyRunID   string   `json:"survey_run_id,omitempty"`
+		Topics        []string `json:"topics,omitempty"`
+		Questions     []string `json:"questions,omitempty"`
+		ChunkVersion  string   `json:"chunk_version,omitempty"`
+		EmbedVersion  string   `json:"embed_version,omitempty"`
+		EmbedProvider string   `json:"embed_provider,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid json: %w", err))
+		return
+	}
+	req.CorpusID = strings.TrimSpace(req.CorpusID)
+	req.Mode = strings.ToUpper(strings.TrimSpace(req.Mode))
+	if req.CorpusID == "" || req.Mode == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("corpus_id and mode are required"))
+		return
+	}
+	if req.EmbedVersion == "" {
+		req.EmbedVersion = s.cfg.EmbedVersion
+	}
+	if req.ChunkVersion == "" {
+		req.ChunkVersion = "v1"
+	}
+	wfID := fmt.Sprintf("backfill-%s-%s-%d", strings.ToLower(req.Mode), req.CorpusID, time.Now().Unix())
+	preferredProviderIdx := s.providers.FindEmbedProviderIndex(req.EmbedProvider)
+	if strings.TrimSpace(req.EmbedProvider) != "" && preferredProviderIdx < 0 {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("unknown embed_provider: %s", req.EmbedProvider))
+		return
+	}
+	strictProvider := req.Mode == "REEMBED_ALL_PAPERS" && preferredProviderIdx >= 0
+	we, err := s.temporal.ExecuteWorkflow(r.Context(), tclient.StartWorkflowOptions{
+		ID:        wfID,
+		TaskQueue: s.cfg.TemporalTaskQueue,
+	}, workflows.BackfillWorkflow, workflows.BackfillInput{
+		CorpusID:                    req.CorpusID,
+		Mode:                        req.Mode,
+		SurveyRunID:                 req.SurveyRunID,
+		Topics:                      req.Topics,
+		Questions:                   req.Questions,
+		DataInRoot:                  s.cfg.DataInRoot,
+		ChunkVersion:                req.ChunkVersion,
+		EmbedVersion:                req.EmbedVersion,
+		EmbedProviders:              s.providers.EmbedCount(),
+		PreferredEmbedProviderIndex: preferredProviderIdx,
+		StrictEmbedProvider:         strictProvider,
+		LLMProviders:                s.providers.LLMCount(),
+		CooldownSeconds:             s.cfg.ProviderCooldownSecs,
+	})
+	if err != nil {
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"workflow_id":    we.GetID(),
+		"run_id":         we.GetRunID(),
+		"mode":           req.Mode,
+		"corpus_id":      req.CorpusID,
+		"embed_version":  req.EmbedVersion,
+		"embed_provider": req.EmbedProvider,
+		"chunk_version":  req.ChunkVersion,
+	})
+}
+
+func (s *Server) handleEmbeddingProviders(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		return
+	}
+	type option struct {
+		ID    string `json:"id"`
+		Label string `json:"label"`
+		Model string `json:"model"`
+	}
+	refs := s.providers.EmbedProviderRefs()
+	opts := make([]option, 0, len(refs))
+	for _, ref := range refs {
+		id := ref.Raw
+		if strings.TrimSpace(id) == "" {
+			id = ref.Name
+			if ref.KeyAlias != "" {
+				id = ref.Name + ":" + ref.KeyAlias
+			}
+		}
+		model := ""
+		switch strings.ToLower(ref.Name) {
+		case "mock":
+			model = fmt.Sprintf("mock-embed-%d", s.cfg.EmbedDim)
+		case "openai":
+			model = "text-embedding-3-small"
+		case "ollama":
+			model = providers.ResolveOllamaEmbedModel(ref.KeyAlias)
+		default:
+			model = "unknown"
+		}
+		label := strings.Title(ref.Name)
+		if ref.KeyAlias != "" {
+			label = label + " / " + ref.KeyAlias
+		}
+		opts = append(opts, option{ID: id, Label: label, Model: model})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"options":               opts,
+		"default_embed_version": s.cfg.EmbedVersion,
+	})
+}
+
+func (s *Server) handleWorkflowStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		return
+	}
+	workflowID := strings.TrimSpace(r.URL.Query().Get("workflow_id"))
+	runID := strings.TrimSpace(r.URL.Query().Get("run_id"))
+	if workflowID == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("workflow_id is required"))
+		return
+	}
+	resp, err := s.temporal.DescribeWorkflowExecution(r.Context(), workflowID, runID)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	info := resp.WorkflowExecutionInfo
+	if info == nil {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("workflow not found"))
+		return
+	}
+	status := strings.ToLower(strings.TrimPrefix(info.Status.String(), "WORKFLOW_EXECUTION_STATUS_"))
+	if status == "" || status == "unspecified" {
+		status = "unknown"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"workflow_id":    workflowID,
+		"run_id":         runID,
+		"type":           info.Type.GetName(),
+		"status":         status,
+		"task_queue":     info.TaskQueue,
+		"history_length": info.HistoryLength,
+		"start_time":     toRFC3339(info.StartTime),
+		"close_time":     toRFC3339(info.CloseTime),
+	})
+}
+
+func orderWithPreferredFirst(order []int, preferred int) []int {
+	if preferred < 0 {
+		return order
+	}
+	out := make([]int, 0, len(order))
+	out = append(out, preferred)
+	for _, v := range order {
+		if v == preferred {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+func toRFC3339(v interface{ AsTime() time.Time }) string {
+	if v == nil {
+		return ""
+	}
+	t := v.AsTime()
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format(time.RFC3339)
 }
 
 func saveUploadedFile(dstDir string, fh *multipart.FileHeader) (paperID, path string, err error) {

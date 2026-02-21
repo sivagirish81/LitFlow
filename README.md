@@ -9,6 +9,7 @@ A durable AI-powered literature survey engine that reliably processes large rese
 - Build topic-driven survey reports in Markdown
 - Explore a knowledge graph (papers <-> topics)
 - Run backfills (retry failed papers, regenerate surveys)
+- Re-embed entire corpora when switching embedding models/providers
 
 ## Architecture
 - `cmd/api`: Go HTTP API (`:8080`)
@@ -69,19 +70,33 @@ LitFlow now auto-loads `.env` for API/worker startup (`cmd/api`, `cmd/worker`) a
 
 Defaults are local-first and free:
 - `LITFLOW_LLM_PROVIDERS="mock|openai:keyname1|openai:keyname2"`
-- `LITFLOW_EMBED_PROVIDERS="mock|openai:keyname1|openai:keyname2"` (Groq is LLM-only)
+- `LITFLOW_EMBED_PROVIDERS="mock|ollama:nomic|ollama:bge|openai:keyname1|openai:keyname2"` (Groq is LLM-only)
 - `LITFLOW_PROVIDER_COOLDOWN_SECONDS=900`
 - `LITFLOW_EMBED_DIM=1536`
+- `LITFLOW_EMBED_VERSION=v1`
 - `LITFLOW_CHUNK_SIZE=1200`
 - `LITFLOW_CHUNK_OVERLAP=200`
 - `NEXT_PUBLIC_LITFLOW_API_BASE=http://localhost:8080`
 - `OPENAI_API_KEY=...` or alias keys like `LITFLOW_OPENAI_KEY_KEYNAME1=...`
 - `GROQ_API_KEY=...` or alias keys like `LITFLOW_GROQ_KEY_KEYNAME1=...`
 - `LITFLOW_GROQ_MODEL=llama-3.1-8b-instant`
+- `LITFLOW_OLLAMA_BASE_URL=http://localhost:11434`
+- `LITFLOW_OLLAMA_EMBED_MODEL=nomic-embed-text` (Nomic Embed, local/free via Ollama)
+- `LITFLOW_OLLAMA_EMBED_MODEL_BGE=bge-small-en-v1.5` (BGE Small EN, local/free via Ollama)
 
 Example using Groq LLM with free local embeddings:
 - `LITFLOW_LLM_PROVIDERS="mock|groq:free1"`
 - `LITFLOW_EMBED_PROVIDERS="mock"`
+
+Example using Nomic embeddings (recommended local free setup):
+- Install Ollama and pull model:
+  - `ollama pull nomic-embed-text`
+  - `ollama pull bge-small-en-v1.5`
+- Set:
+  - `LITFLOW_EMBED_PROVIDERS="ollama:nomic|ollama:bge|mock"`
+  - `LITFLOW_OLLAMA_EMBED_MODEL_NOMIC="nomic-embed-text"`
+  - `LITFLOW_OLLAMA_EMBED_MODEL_BGE="bge-small-en-v1.5"`
+  - `LITFLOW_EMBED_VERSION="nomic-v1"`
 
 `mock` provider is deterministic and works without tokens.
 
@@ -106,8 +121,45 @@ Example using Groq LLM with free local embeddings:
   - exposes `GetSurveyProgress`
 - `BackfillWorkflow`
   - `RETRY_FAILED_PAPERS`
+  - `REEMBED_ALL_PAPERS`
   - `REGENERATE_SURVEY`
   - writes run manifest under `./data/out/{corpusId}/runs/{runId}/manifest.json`
+
+## Backfill API (reprocessing)
+Start a backfill run:
+
+```bash
+curl -s -X POST http://localhost:8080/backfill \
+  -H "Content-Type: application/json" \
+  -d '{
+    "corpus_id":"<CORPUS_ID>",
+    "mode":"REEMBED_ALL_PAPERS",
+    "embed_provider":"ollama:nomic",
+    "embed_version":"nomic-v1"
+  }'
+```
+
+Other modes:
+- `RETRY_FAILED_PAPERS`
+- `REGENERATE_SURVEY` (provide `topics` and optionally `questions`)
+
+## Switching embedding providers/models safely
+Use this sequence when moving from mock/openai to nomic (or between any embedding models):
+
+1. Update `.env` embedding settings:
+   - `LITFLOW_EMBED_PROVIDERS=ollama:nomic|mock`
+   - `LITFLOW_OLLAMA_EMBED_MODEL_NOMIC=nomic-embed-text`
+   - `LITFLOW_EMBED_VERSION=nomic-v1`
+2. Restart worker + API so they load new env.
+3. Run backfill mode `REEMBED_ALL_PAPERS` for each corpus.
+4. Verify progress in Temporal UI (`localhost:8233`) and inspect run manifest.
+5. Ask queries again; retrieval now uses `embedding_version=nomic-v1`.
+
+Interview explanation:
+- `provider` chooses how vectors are produced.
+- `embedding_version` is the retrieval contract.
+- Backfill reruns `PaperProcessWorkflow` on all papers to overwrite vectors idempotently.
+- Search and survey retrieval filter by active `embedding_version`, preventing mixed-index drift.
 
 ## Reliability notes
 - Upserts use `ON CONFLICT DO UPDATE`

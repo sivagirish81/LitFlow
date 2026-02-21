@@ -140,12 +140,45 @@ func (m *Manager) FindLLMProviderByName(name string) (LLMProvider, ProviderRef, 
 	return nil, ProviderRef{}, false
 }
 
+func (m *Manager) EmbedProviderRefs() []ProviderRef {
+	out := make([]ProviderRef, 0, len(m.embedProviders))
+	for i := range m.embedProviders {
+		out = append(out, m.embedProviders[i].Ref)
+	}
+	return out
+}
+
+func (m *Manager) FindEmbedProviderIndex(raw string) int {
+	target := strings.ToLower(strings.TrimSpace(raw))
+	if target == "" {
+		return -1
+	}
+	for i := range m.embedProviders {
+		ref := m.embedProviders[i].Ref
+		candidates := []string{
+			strings.ToLower(strings.TrimSpace(ref.Raw)),
+			strings.ToLower(strings.TrimSpace(ref.Name)),
+		}
+		if ref.KeyAlias != "" {
+			candidates = append(candidates, strings.ToLower(strings.TrimSpace(ref.Name+":"+ref.KeyAlias)))
+		}
+		for _, c := range candidates {
+			if c == target {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
 func buildProvider(ref ProviderRef, dim int) (any, error) {
 	switch strings.ToLower(ref.Name) {
 	case "mock":
 		return NewMockProvider(dim), nil
 	case "openai":
 		return NewOpenAIProvider(ref.KeyAlias), nil
+	case "ollama":
+		return NewOllamaEmbeddingProvider(ref.KeyAlias), nil
 	case "groq":
 		return NewGroqProvider(ref.KeyAlias), nil
 	default:

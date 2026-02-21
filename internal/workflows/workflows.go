@@ -76,8 +76,8 @@ func CorpusIngestWorkflow(ctx workflow.Context, input CorpusIngestInput) (string
 			f := workflow.ExecuteChildWorkflow(childCtx, PaperProcessWorkflow, PaperProcessInput{
 				CorpusID:        input.CorpusID,
 				PaperPath:       path,
-				ChunkVersion:    "v1",
-				EmbedVersion:    "v1",
+				ChunkVersion:    defaultChunkVersion(input.ChunkVersion),
+				EmbedVersion:    defaultEmbedVersion(input.EmbedVersion),
 				EmbedProviders:  input.EmbedProviders,
 				CooldownSeconds: input.CooldownSeconds,
 			})
@@ -193,7 +193,23 @@ func PaperProcessWorkflow(ctx workflow.Context, input PaperProcessInput) (string
 
 	status.CurrentStep = "embed_chunks"
 	status.Steps[status.CurrentStep] = "processing"
-	embedOut, err := callEmbedWithFailover(ctx, &state, providerCount, cooldown, activities.EmbedChunksInput{Operation: "embed", CorpusID: input.CorpusID, PaperID: computeOut.PaperID, Input: chunkOut.Chunks}, status.RetryCounts)
+	var embedOut activities.EmbedChunksOutput
+	var err error
+	if input.PreferredEmbedProviderIndex >= 0 {
+		embedOut, err = callEmbedWithFailover(ctx, &state, providerCount, cooldown, activities.EmbedChunksInput{
+			Operation: "embed",
+			CorpusID:  input.CorpusID,
+			PaperID:   computeOut.PaperID,
+			Input:     chunkOut.Chunks,
+		}, status.RetryCounts, input.PreferredEmbedProviderIndex, input.StrictEmbedProvider)
+	} else {
+		embedOut, err = callEmbedWithFailover(ctx, &state, providerCount, cooldown, activities.EmbedChunksInput{
+			Operation: "embed",
+			CorpusID:  input.CorpusID,
+			PaperID:   computeOut.PaperID,
+			Input:     chunkOut.Chunks,
+		}, status.RetryCounts, -1, false)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -279,7 +295,12 @@ func SurveyBuildWorkflow(ctx workflow.Context, input SurveyBuildInput) (string, 
 			continue
 		}
 		var retrieved activities.SearchChunksOutput
-		if err := workflow.ExecuteActivity(ctx, "SearchChunksActivity", activities.SearchChunksInput{CorpusID: input.CorpusID, QueryVec: eq.Vector, TopK: 8}).Get(ctx, &retrieved); err != nil {
+		if err := workflow.ExecuteActivity(ctx, "SearchChunksActivity", activities.SearchChunksInput{
+			CorpusID:         input.CorpusID,
+			QueryVec:         eq.Vector,
+			TopK:             8,
+			EmbeddingVersion: defaultEmbedVersion(input.EmbedVersion),
+		}).Get(ctx, &retrieved); err != nil {
 			progress.TopicStatus[topic] = "failed"
 			continue
 		}
@@ -348,7 +369,7 @@ func BackfillWorkflow(ctx workflow.Context, input BackfillInput) (string, error)
 		"run_id":     runID,
 		"mode":       input.Mode,
 		"corpus_id":  input.CorpusID,
-		"versions":   map[string]any{"chunk": "v1", "embed": "v1", "survey_prompt": "v1"},
+		"versions":   map[string]any{"chunk": defaultChunkVersion(input.ChunkVersion), "embed": defaultEmbedVersion(input.EmbedVersion), "survey_prompt": "v1"},
 		"started_at": workflow.Now(ctx),
 	}
 
@@ -360,20 +381,49 @@ func BackfillWorkflow(ctx workflow.Context, input BackfillInput) (string, error)
 		}
 		retried := 0
 		for _, p := range failed.Papers {
-			path := "./data/in/" + input.CorpusID + "/" + p.Filename
+			path := pathForBackfill(input, p.Filename)
 			var out string
 			if err := workflow.ExecuteChildWorkflow(ctx, PaperProcessWorkflow, PaperProcessInput{
-				CorpusID:        input.CorpusID,
-				PaperPath:       path,
-				ChunkVersion:    "v1",
-				EmbedVersion:    "v1",
-				EmbedProviders:  1,
-				CooldownSeconds: 900,
+				CorpusID:                    input.CorpusID,
+				PaperPath:                   path,
+				ChunkVersion:                defaultChunkVersion(input.ChunkVersion),
+				EmbedVersion:                defaultEmbedVersion(input.EmbedVersion),
+				EmbedProviders:              defaultCount(input.EmbedProviders),
+				PreferredEmbedProviderIndex: input.PreferredEmbedProviderIndex,
+				StrictEmbedProvider:         input.StrictEmbedProvider,
+				CooldownSeconds:             defaultSeconds(input.CooldownSeconds, 900),
 			}).Get(ctx, &out); err == nil {
 				retried++
 			}
 		}
 		manifest["retried_failed_papers"] = retried
+	case "REEMBED_ALL_PAPERS":
+		var all activities.ListCorpusPapersOutput
+		if err := workflow.ExecuteActivity(ctx, "ListCorpusPapersActivity", activities.ListCorpusPapersInput{CorpusID: input.CorpusID}).Get(ctx, &all); err != nil {
+			return "", err
+		}
+		processed := 0
+		for _, p := range all.Papers {
+			if strings.TrimSpace(p.Filename) == "" {
+				continue
+			}
+			path := pathForBackfill(input, p.Filename)
+			var out string
+			if err := workflow.ExecuteChildWorkflow(ctx, PaperProcessWorkflow, PaperProcessInput{
+				CorpusID:                    input.CorpusID,
+				PaperPath:                   path,
+				ChunkVersion:                defaultChunkVersion(input.ChunkVersion),
+				EmbedVersion:                defaultEmbedVersion(input.EmbedVersion),
+				EmbedProviders:              defaultCount(input.EmbedProviders),
+				PreferredEmbedProviderIndex: input.PreferredEmbedProviderIndex,
+				StrictEmbedProvider:         input.StrictEmbedProvider,
+				CooldownSeconds:             defaultSeconds(input.CooldownSeconds, 900),
+			}).Get(ctx, &out); err == nil {
+				processed++
+			}
+		}
+		manifest["reembedded_papers"] = processed
+		manifest["total_papers_seen"] = len(all.Papers)
 	case "REGENERATE_SURVEY":
 		run := input.SurveyRunID
 		if strings.TrimSpace(run) == "" {
@@ -385,9 +435,10 @@ func BackfillWorkflow(ctx workflow.Context, input BackfillInput) (string, error)
 			CorpusID:        input.CorpusID,
 			Topics:          input.Topics,
 			Questions:       input.Questions,
-			EmbedProviders:  1,
-			LLMProviders:    1,
-			CooldownSeconds: 900,
+			EmbedProviders:  defaultCount(input.EmbedProviders),
+			LLMProviders:    defaultCount(input.LLMProviders),
+			CooldownSeconds: defaultSeconds(input.CooldownSeconds, 900),
+			EmbedVersion:    defaultEmbedVersion(input.EmbedVersion),
 		}).Get(ctx, &outPath); err != nil {
 			return "", err
 		}
@@ -408,10 +459,27 @@ func BackfillWorkflow(ctx workflow.Context, input BackfillInput) (string, error)
 	return out.Path, nil
 }
 
-func callEmbedWithFailover(ctx workflow.Context, state *providerState, providerCount int, cooldown time.Duration, input activities.EmbedChunksInput, retryCounts map[string]int) (activities.EmbedChunksOutput, error) {
+func callEmbedWithFailover(ctx workflow.Context, state *providerState, providerCount int, cooldown time.Duration, input activities.EmbedChunksInput, retryCounts map[string]int, preferredIdx int, strict bool) (activities.EmbedChunksOutput, error) {
+	if retryCounts == nil {
+		retryCounts = map[string]int{}
+	}
 	var lastErr error
-	for attempt := 0; attempt < providerCount*4; attempt++ {
-		idx := attempt % providerCount
+	maxAttempts := providerCount * 4
+	if maxAttempts <= 0 {
+		maxAttempts = 4
+	}
+	if strict && preferredIdx >= 0 {
+		maxAttempts = 4
+	}
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		idx := 0
+		if strict && preferredIdx >= 0 {
+			idx = preferredIdx
+		} else if preferredIdx >= 0 {
+			idx = (preferredIdx + attempt) % providerCount
+		} else {
+			idx = attempt % providerCount
+		}
 		if isProviderDisabled(ctx, state, idx) {
 			continue
 		}
@@ -433,17 +501,24 @@ func callEmbedWithFailover(ctx workflow.Context, state *providerState, providerC
 		case providers.ErrorRate:
 			if retryCounts[key] <= 2 {
 				workflow.Sleep(ctx, time.Duration(retryCounts[key]*2)*time.Second)
-				attempt--
+				if !strict {
+					attempt--
+				}
 			} else {
 				disableProviderUntil(ctx, state, idx, 2*time.Minute)
 			}
 		case providers.ErrorTransient:
 			if retryCounts[key] <= 2 {
 				workflow.Sleep(ctx, time.Duration(retryCounts[key])*time.Second)
-				attempt--
+				if !strict {
+					attempt--
+				}
 			}
 		default:
 			disableProviderUntil(ctx, state, idx, time.Minute)
+		}
+		if strict {
+			continue
 		}
 	}
 	if lastErr == nil {
@@ -609,4 +684,26 @@ func durationOrDefault(seconds int, fallback int) time.Duration {
 		seconds = fallback
 	}
 	return time.Duration(seconds) * time.Second
+}
+
+func defaultCount(n int) int {
+	if n <= 0 {
+		return 1
+	}
+	return n
+}
+
+func defaultSeconds(n int, fallback int) int {
+	if n <= 0 {
+		return fallback
+	}
+	return n
+}
+
+func pathForBackfill(input BackfillInput, filename string) string {
+	base := strings.TrimSpace(input.DataInRoot)
+	if base == "" {
+		base = "./data/in"
+	}
+	return filepath.Join(base, input.CorpusID, filename)
 }

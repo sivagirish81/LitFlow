@@ -34,6 +34,24 @@ type ListFailedPapersOutput struct {
 	Papers []FailedPaper `json:"papers"`
 }
 
+type ListCorpusPapersInput struct {
+	CorpusID string `json:"corpus_id"`
+}
+
+type CorpusPaper struct {
+	PaperID    string `json:"paper_id"`
+	Filename   string `json:"filename"`
+	Status     string `json:"status"`
+	Title      string `json:"title,omitempty"`
+	Authors    string `json:"authors,omitempty"`
+	Year       int    `json:"year,omitempty"`
+	FailReason string `json:"fail_reason,omitempty"`
+}
+
+type ListCorpusPapersOutput struct {
+	Papers []CorpusPaper `json:"papers"`
+}
+
 type WriteRunManifestInput struct {
 	CorpusID string         `json:"corpus_id"`
 	RunID    string         `json:"run_id"`

@@ -1,9 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { CorpusNav } from "../../../../components/corpus-nav";
 import { api } from "../../../../lib/api";
+
+const EMBED_PROVIDER_KEY = "litflow.embedProvider";
+const EMBED_VERSION_KEY = "litflow.embedVersion";
 
 type Citation = {
   ref_id: string;
@@ -24,6 +27,15 @@ export default function SearchPage({ params }: { params: { corpusId: string } })
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [citations, setCitations] = useState<Citation[]>([]);
+  const [embedProvider, setEmbedProvider] = useState("mock");
+  const [embedVersion, setEmbedVersion] = useState("v1");
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      setEmbedProvider(localStorage.getItem(EMBED_PROVIDER_KEY) || "mock");
+      setEmbedVersion(localStorage.getItem(EMBED_VERSION_KEY) || "mock-v1");
+    }
+  }, []);
 
   const ask = async () => {
     if (!question.trim()) {
@@ -34,7 +46,13 @@ export default function SearchPage({ params }: { params: { corpusId: string } })
     setError("");
     setStatus("Querying corpus and retrieving citations...");
     try {
-      const res = await api.ask({ corpus_id: params.corpusId, question, top_k: 8 });
+      const res = await api.ask({
+        corpus_id: params.corpusId,
+        question,
+        top_k: 8,
+        embed_provider: embedProvider,
+        embed_version: embedVersion,
+      });
       setAnswer(linkifyCitationRefs(res.answer));
       setCitations(res.citations);
       if (res.citations.length === 0) {
@@ -83,6 +101,7 @@ export default function SearchPage({ params }: { params: { corpusId: string } })
             <button disabled={busy} className="rounded-xl bg-ink px-6 py-2 text-white disabled:opacity-50" onClick={ask}>{busy ? "Searching..." : "Ask LitFlow"}</button>
             {status && <span className="text-sm text-zinc-600">{status}</span>}
           </div>
+          <p className="mt-2 text-xs text-zinc-500">Embedding profile: <span className="font-medium text-zinc-700">{embedProvider}</span> / <span className="font-medium text-zinc-700">{embedVersion}</span></p>
           {error && <p className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p>}
         </div>
 
