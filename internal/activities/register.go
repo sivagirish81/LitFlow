@@ -6,6 +6,7 @@ func Register(w worker.Worker, a *Activities) {
 	w.RegisterActivity(a.ListPDFsActivity)
 	w.RegisterActivity(a.WriteCorpusSummaryActivity)
 	w.RegisterActivity(a.ListFailedPapersActivity)
+	w.RegisterActivity(a.ListCorpusPapersActivity)
 	w.RegisterActivity(a.WriteRunManifestActivity)
 	w.RegisterActivity(a.ComputePaperIDActivity)
 	w.RegisterActivity(a.ExtractTextActivity)

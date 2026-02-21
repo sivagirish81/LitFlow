@@ -16,6 +16,7 @@ type Config struct {
 	ChunkOverlap         int
 	ProviderCooldownSecs int
 	EmbedDim             int
+	EmbedVersion         string
 	WebAPIBase           string
 	LLMProviders         string
 	EmbedProviders       string
@@ -34,6 +35,7 @@ func Load() Config {
 		ChunkOverlap:         getenvInt("LITFLOW_CHUNK_OVERLAP", 200),
 		ProviderCooldownSecs: getenvInt("LITFLOW_PROVIDER_COOLDOWN_SECONDS", 900),
 		EmbedDim:             getenvInt("LITFLOW_EMBED_DIM", 1536),
+		EmbedVersion:         getenv("LITFLOW_EMBED_VERSION", "v1"),
 		WebAPIBase:           getenv("NEXT_PUBLIC_LITFLOW_API_BASE", "http://localhost:8080"),
 		LLMProviders:         getenv("LITFLOW_LLM_PROVIDERS", "mock"),
 		EmbedProviders:       getenv("LITFLOW_EMBED_PROVIDERS", "mock"),

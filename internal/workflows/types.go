@@ -6,17 +6,21 @@ type CorpusIngestInput struct {
 	MaxConcurrentChildren int    `json:"max_concurrent_children"`
 	EmbedProviders        int    `json:"embed_providers"`
 	CooldownSeconds       int    `json:"cooldown_seconds"`
+	ChunkVersion          string `json:"chunk_version"`
+	EmbedVersion          string `json:"embed_version"`
 }
 
 type PaperProcessInput struct {
-	CorpusID        string `json:"corpus_id"`
-	PaperPath       string `json:"paper_path"`
-	ChunkSize       int    `json:"chunk_size"`
-	ChunkOverlap    int    `json:"chunk_overlap"`
-	ChunkVersion    string `json:"chunk_version"`
-	EmbedVersion    string `json:"embed_version"`
-	EmbedProviders  int    `json:"embed_providers"`
-	CooldownSeconds int    `json:"cooldown_seconds"`
+	CorpusID                    string `json:"corpus_id"`
+	PaperPath                   string `json:"paper_path"`
+	ChunkSize                   int    `json:"chunk_size"`
+	ChunkOverlap                int    `json:"chunk_overlap"`
+	ChunkVersion                string `json:"chunk_version"`
+	EmbedVersion                string `json:"embed_version"`
+	EmbedProviders              int    `json:"embed_providers"`
+	PreferredEmbedProviderIndex int    `json:"preferred_embed_provider_index"`
+	StrictEmbedProvider         bool   `json:"strict_embed_provider"`
+	CooldownSeconds             int    `json:"cooldown_seconds"`
 }
 
 type SurveyBuildInput struct {
@@ -27,14 +31,23 @@ type SurveyBuildInput struct {
 	EmbedProviders  int      `json:"embed_providers"`
 	LLMProviders    int      `json:"llm_providers"`
 	CooldownSeconds int      `json:"cooldown_seconds"`
+	EmbedVersion    string   `json:"embed_version"`
 }
 
 type BackfillInput struct {
-	CorpusID    string   `json:"corpus_id"`
-	Mode        string   `json:"mode"`
-	SurveyRunID string   `json:"survey_run_id,omitempty"`
-	Topics      []string `json:"topics,omitempty"`
-	Questions   []string `json:"questions,omitempty"`
+	CorpusID                    string   `json:"corpus_id"`
+	Mode                        string   `json:"mode"`
+	SurveyRunID                 string   `json:"survey_run_id,omitempty"`
+	Topics                      []string `json:"topics,omitempty"`
+	Questions                   []string `json:"questions,omitempty"`
+	DataInRoot                  string   `json:"data_in_root,omitempty"`
+	ChunkVersion                string   `json:"chunk_version,omitempty"`
+	EmbedVersion                string   `json:"embed_version,omitempty"`
+	EmbedProviders              int      `json:"embed_providers,omitempty"`
+	PreferredEmbedProviderIndex int      `json:"preferred_embed_provider_index,omitempty"`
+	StrictEmbedProvider         bool     `json:"strict_embed_provider,omitempty"`
+	LLMProviders                int      `json:"llm_providers,omitempty"`
+	CooldownSeconds             int      `json:"cooldown_seconds,omitempty"`
 }
 
 type PaperStatus struct {
