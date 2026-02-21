@@ -34,6 +34,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  getEmbeddingProviders: () => req<{ options: Array<{ id: string; label: string; model: string }>; default_embed_version: string }>("/providers/embeddings"),
   getCorpora: () => req<{ corpora: Array<{ corpus_id: string; name: string; created_at: string }> }>("/corpora"),
   createCorpus: (name: string) => req<{ corpus_id: string; name: string }>("/corpora", { method: "POST", body: JSON.stringify({ name }) }),
   uploadPDFs: async (corpusId: string, files: File[]) => {
@@ -46,9 +47,15 @@ export const api = {
   startIngest: (corpusId: string) => req<{ workflow_id: string; run_id: string }>(`/corpora/${corpusId}/ingest`, { method: "POST" }),
   getProgress: (corpusId: string) => req<{ total: number; done: number; failed: number; per_paper_status: Record<string, string> }>(`/corpora/${corpusId}/progress`),
   getPapers: (corpusId: string) => req<{ papers: Array<{ paper_id: string; filename: string; status: string; fail_reason?: string }> }>(`/corpora/${corpusId}/papers`),
-  ask: (payload: { corpus_id: string; question: string; top_k?: number }) => req<{ answer: string; citations: Array<{ ref_id: string; paper_id: string; title: string; filename?: string; paper_url?: string; chunk_id: string; snippet: string; summary?: string; score: number }> }>("/ask", { method: "POST", body: JSON.stringify(payload) }),
+  ask: (payload: { corpus_id: string; question: string; top_k?: number; embed_provider?: string; embed_version?: string }) => req<{ answer: string; citations: Array<{ ref_id: string; paper_id: string; title: string; filename?: string; paper_url?: string; chunk_id: string; snippet: string; summary?: string; score: number }>; embed_provider?: string; embed_model?: string; embed_version?: string }>("/ask", { method: "POST", body: JSON.stringify(payload) }),
   createSurvey: (payload: { corpus_id: string; topics: string[]; questions: string[] }) => req<{ survey_run_id: string }>("/survey", { method: "POST", body: JSON.stringify(payload) }),
   surveyProgress: (id: string) => req<{ total_topics: number; done_topics: number; topic_status: Record<string, string> }>(`/survey/${id}/progress`),
   surveyReport: (id: string) => req<{ status: string; report_markdown: string }>(`/survey/${id}/report`),
-  graph: (corpusId: string) => req<{ nodes: Array<{ node_id: string; node_type: string; label: string }>; edges: Array<{ source_node_id: string; target_node_id: string; weight: number; edge_type: string }> }>(`/corpora/${corpusId}/graph`)
+  graph: (corpusId: string) => req<{ nodes: Array<{ node_id: string; node_type: string; label: string }>; edges: Array<{ source_node_id: string; target_node_id: string; weight: number; edge_type: string }> }>(`/corpora/${corpusId}/graph`),
+  workflowStatus: (workflowId: string, runId?: string) => req<{ workflow_id: string; run_id?: string; type: string; status: string; task_queue?: string; history_length?: number; start_time?: string; close_time?: string }>(`/workflows/status?workflow_id=${encodeURIComponent(workflowId)}${runId ? `&run_id=${encodeURIComponent(runId)}` : ""}`),
+  backfill: (payload: { corpus_id: string; mode: "RETRY_FAILED_PAPERS" | "REEMBED_ALL_PAPERS" | "REGENERATE_SURVEY"; embed_provider?: string; embed_version?: string; chunk_version?: string; topics?: string[]; questions?: string[] }) =>
+    req<{ workflow_id: string; run_id: string; mode: string; corpus_id: string; embed_version: string }>(
+      "/backfill",
+      { method: "POST", body: JSON.stringify(payload) }
+    )
 };

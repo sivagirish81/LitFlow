@@ -88,6 +88,30 @@ func (a *Activities) ListFailedPapersActivity(ctx context.Context, in ListFailed
 	return out, nil
 }
 
+func (a *Activities) ListCorpusPapersActivity(ctx context.Context, in ListCorpusPapersInput) (ListCorpusPapersOutput, error) {
+	papers, err := a.paperRepo.ListPapersByCorpus(ctx, in.CorpusID)
+	if err != nil {
+		return ListCorpusPapersOutput{}, err
+	}
+	out := ListCorpusPapersOutput{Papers: make([]CorpusPaper, 0, len(papers))}
+	for _, p := range papers {
+		year := 0
+		if p.Year != nil {
+			year = *p.Year
+		}
+		out.Papers = append(out.Papers, CorpusPaper{
+			PaperID:    p.PaperID,
+			Filename:   p.Filename,
+			Status:     p.Status,
+			Title:      p.Title,
+			Authors:    p.Authors,
+			Year:       year,
+			FailReason: p.FailReason,
+		})
+	}
+	return out, nil
+}
+
 func (a *Activities) WriteRunManifestActivity(ctx context.Context, in WriteRunManifestInput) (WriteRunManifestOutput, error) {
 	_ = ctx
 	path := filepath.Join(a.cfg.DataOutRoot, in.CorpusID, "runs", in.RunID, "manifest.json")
@@ -280,7 +304,9 @@ func (a *Activities) EmbedQueryActivity(ctx context.Context, in EmbedQueryInput)
 }
 
 func (a *Activities) SearchChunksActivity(ctx context.Context, in SearchChunksInput) (SearchChunksOutput, error) {
-	results, err := a.searcher.SearchChunks(ctx, in.CorpusID, in.QueryVec, in.TopK, vector.SearchFilters{})
+	results, err := a.searcher.SearchChunks(ctx, in.CorpusID, in.QueryVec, in.TopK, vector.SearchFilters{
+		EmbeddingVersion: in.EmbeddingVersion,
+	})
 	if err != nil {
 		return SearchChunksOutput{}, err
 	}

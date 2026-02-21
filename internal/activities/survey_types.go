@@ -13,9 +13,10 @@ type EmbedQueryOutput struct {
 }
 
 type SearchChunksInput struct {
-	CorpusID string    `json:"corpus_id"`
-	QueryVec []float32 `json:"query_vec"`
-	TopK     int       `json:"top_k"`
+	CorpusID         string    `json:"corpus_id"`
+	QueryVec         []float32 `json:"query_vec"`
+	TopK             int       `json:"top_k"`
+	EmbeddingVersion string    `json:"embedding_version,omitempty"`
 }
 
 type SearchChunk struct {

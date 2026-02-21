@@ -11,7 +11,8 @@ import (
 )
 
 type SearchFilters struct {
-	PaperIDs []string
+	PaperIDs         []string
+	EmbeddingVersion string
 }
 
 type Searcher struct {
@@ -37,6 +38,15 @@ func (s *Searcher) SearchChunks(ctx context.Context, corpusID string, queryVec [
 	if len(filters.PaperIDs) > 0 {
 		filterSQL = " AND c.paper_id = ANY($4)"
 		args = append(args, filters.PaperIDs)
+	}
+	if strings.TrimSpace(filters.EmbeddingVersion) != "" {
+		if len(args) == 3 {
+			filterSQL += " AND c.embedding_version = $4"
+			args = append(args, filters.EmbeddingVersion)
+		} else {
+			filterSQL += " AND c.embedding_version = $5"
+			args = append(args, filters.EmbeddingVersion)
+		}
 	}
 
 	query := `
