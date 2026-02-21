@@ -57,5 +57,13 @@ export const api = {
     req<{ workflow_id: string; run_id: string; mode: string; corpus_id: string; embed_version: string }>(
       "/backfill",
       { method: "POST", body: JSON.stringify(payload) }
-    )
+    ),
+  kgBackfill: (payload: { corpus_id: string; prompt_version?: string; model_version?: string; max_concurrent?: number }) =>
+    req<{ workflow_id: string; run_id: string }>("/kg/backfill", { method: "POST", body: JSON.stringify(payload) }),
+  kgExtractPaper: (paperId: string, payload: { corpus_id: string; prompt_version?: string; model_version?: string }) =>
+    req<{ workflow_id: string; run_id: string }>(`/kg/papers/${encodeURIComponent(paperId)}/extract`, { method: "POST", body: JSON.stringify(payload) }),
+  kgLineage: (corpusId: string, methodName: string) =>
+    req<{ nodes: Array<{ node_id: string; node_type: string; label: string }>; edges: Array<{ source_id: string; source_name: string; target_id: string; target_name: string; edge_type: string; depth: number }> }>(`/kg/lineage?corpus_id=${encodeURIComponent(corpusId)}&method_name=${encodeURIComponent(methodName)}`),
+  kgQuery: (payload: { corpus_id: string; cypher: string }) =>
+    req<Record<string, unknown>>("/kg/query", { method: "POST", body: JSON.stringify(payload) }),
 };
