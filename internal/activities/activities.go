@@ -271,14 +271,21 @@ func (a *Activities) EmbedChunksActivity(ctx context.Context, in EmbedChunksInpu
 }
 
 func (a *Activities) LLMGenerateActivity(ctx context.Context, in LLMGenerateInput) (LLMGenerateOutput, error) {
-	provider, _ := a.providers.LLMProviderByIndex(in.ProviderIndex)
+	if in.ProviderRef != "" {
+		if idx := a.providers.FindLLMProviderIndex(in.ProviderRef); idx >= 0 {
+			in.ProviderIndex = idx
+		} else {
+			return LLMGenerateOutput{}, fmt.Errorf("llm provider ref not configured in worker: %s", in.ProviderRef)
+		}
+	}
+	provider, ref := a.providers.LLMProviderByIndex(in.ProviderIndex)
 	resp, info, err := provider.Generate(ctx, providers.GenerateRequest{
 		Operation: in.Operation,
 		Prompt:    in.Prompt,
 		Context:   in.Context,
 	})
 	if err != nil {
-		return LLMGenerateOutput{}, err
+		return LLMGenerateOutput{}, fmt.Errorf("llm generate via %s failed: %w", ref.Raw, err)
 	}
 	return LLMGenerateOutput{
 		Text:         resp.Text,
@@ -353,6 +360,58 @@ func (a *Activities) LogLLMCallActivity(ctx context.Context, in LogLLMCallInput)
 
 func (a *Activities) UpsertTopicGraphActivity(ctx context.Context, in UpsertTopicGraphInput) error {
 	return a.graphRepo.UpsertTopicRetrieval(ctx, in.CorpusID, in.Topic, in.PaperID, in.Title, in.Score, in.ChunkID)
+}
+
+func (a *Activities) ListPaperChunksActivity(ctx context.Context, in KGPaperInput) (ListPaperChunksOutput, error) {
+	paper, err := a.paperRepo.GetPaperByID(ctx, in.CorpusID, in.PaperID)
+	if err != nil {
+		return ListPaperChunksOutput{}, err
+	}
+	chunks, err := a.chunkRepo.ListChunksByPaper(ctx, in.CorpusID, in.PaperID)
+	if err != nil {
+		return ListPaperChunksOutput{}, err
+	}
+	out := ListPaperChunksOutput{
+		Title:  paper.Title,
+		Chunks: make([]KGPaperChunk, 0, len(chunks)),
+	}
+	for _, c := range chunks {
+		out.Chunks = append(out.Chunks, KGPaperChunk{ChunkID: c.ChunkID, Text: c.Text})
+	}
+	return out, nil
+}
+
+func (a *Activities) UpsertKGTriplesActivity(ctx context.Context, in UpsertKGTriplesInput) error {
+	triples := make([]storage.KGTripleInput, 0, len(in.Triples))
+	for _, t := range in.Triples {
+		triples = append(triples, storage.KGTripleInput{
+			CorpusID:     in.CorpusID,
+			PaperID:      in.PaperID,
+			PromptHash:   in.PromptHash,
+			ModelVersion: in.ModelVersion,
+			SourceType:   t.SourceType,
+			SourceName:   t.SourceName,
+			RelationType: t.RelationType,
+			TargetType:   t.TargetType,
+			TargetName:   t.TargetName,
+			ChunkID:      t.ChunkID,
+			Evidence:     t.Evidence,
+			Confidence:   t.Confidence,
+		})
+	}
+	return a.graphRepo.UpsertKGTriples(ctx, triples)
+}
+
+func (a *Activities) MarkKGPaperRunActivity(ctx context.Context, in MarkKGPaperRunInput) error {
+	return a.graphRepo.UpsertKGRun(ctx, storage.KGRunRecord{
+		CorpusID:     in.CorpusID,
+		PaperID:      in.PaperID,
+		PromptHash:   in.PromptHash,
+		ModelVersion: in.ModelVersion,
+		Status:       in.Status,
+		TripleCount:  in.TripleCount,
+		LastError:    in.LastError,
+	})
 }
 
 func heuristicTitleAndAuthors(text string) (string, string) {

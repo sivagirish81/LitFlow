@@ -3,6 +3,8 @@ package storage
 import (
 	"context"
 	"fmt"
+
+	"litflow/internal/models"
 )
 
 type ChunkRecord struct {
@@ -52,4 +54,28 @@ DO UPDATE SET
 		return fmt.Errorf("commit chunks tx: %w", err)
 	}
 	return nil
+}
+
+func (r *ChunkRepo) ListChunksByPaper(ctx context.Context, corpusID, paperID string) ([]models.Chunk, error) {
+	rows, err := r.db.Pool.Query(ctx, `
+SELECT chunk_id, paper_id, corpus_id::text, chunk_index, text, embedding_version, created_at
+FROM chunks
+WHERE corpus_id=$1::uuid AND paper_id=$2
+ORDER BY chunk_index ASC`, corpusID, paperID)
+	if err != nil {
+		return nil, fmt.Errorf("list chunks by paper: %w", err)
+	}
+	defer rows.Close()
+	out := make([]models.Chunk, 0, 64)
+	for rows.Next() {
+		var c models.Chunk
+		if err := rows.Scan(&c.ChunkID, &c.PaperID, &c.CorpusID, &c.ChunkIndex, &c.Text, &c.EmbeddingVersion, &c.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan chunk by paper: %w", err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate chunk by paper: %w", err)
+	}
+	return out, nil
 }

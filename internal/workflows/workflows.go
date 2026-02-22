@@ -317,17 +317,17 @@ func SurveyBuildWorkflow(ctx workflow.Context, input SurveyBuildInput) (string, 
 		progress.TopicStatus[topic] = "drafting"
 
 		contextWindow := toCitationContext(retrieved.Results)
-		outline, _, _ := callLLMWithFailover(ctx, &llmState, llmProviders, cooldown, activities.LLMGenerateInput{Operation: "survey_outline", CorpusID: input.CorpusID, Prompt: "Create an outline for topic: " + topic, Context: contextWindow}, nil)
+		outline, _, _ := callLLMWithFailover(ctx, &llmState, llmProviders, input.LLMProviderRefs, cooldown, activities.LLMGenerateInput{Operation: "survey_outline", CorpusID: input.CorpusID, Prompt: "Create an outline for topic: " + topic, Context: contextWindow}, nil)
 
 		sectionInput := activities.LLMGenerateInput{Operation: "survey_section", CorpusID: input.CorpusID, Prompt: "Draft literature survey section for topic: " + topic, Context: contextWindow}
-		section, sectionErrType, sectionErr := callLLMWithFailover(ctx, &llmState, llmProviders, cooldown, sectionInput, nil)
+		section, sectionErrType, sectionErr := callLLMWithFailover(ctx, &llmState, llmProviders, input.LLMProviderRefs, cooldown, sectionInput, nil)
 		if sectionErr != nil && sectionErrType == string(providers.ErrorContext) {
 			reduced := contextWindow
 			if len(reduced) > 3 {
 				reduced = reduced[:3]
 			}
 			sectionInput.Context = reduced
-			section, _, sectionErr = callLLMWithFailover(ctx, &llmState, llmProviders, cooldown, sectionInput, nil)
+			section, _, sectionErr = callLLMWithFailover(ctx, &llmState, llmProviders, input.LLMProviderRefs, cooldown, sectionInput, nil)
 		}
 
 		report.WriteString("## " + topic + "\n\n")
@@ -437,6 +437,7 @@ func BackfillWorkflow(ctx workflow.Context, input BackfillInput) (string, error)
 			Questions:       input.Questions,
 			EmbedProviders:  defaultCount(input.EmbedProviders),
 			LLMProviders:    defaultCount(input.LLMProviders),
+			LLMProviderRefs: input.LLMProviderRefs,
 			CooldownSeconds: defaultSeconds(input.CooldownSeconds, 900),
 			EmbedVersion:    defaultEmbedVersion(input.EmbedVersion),
 		}).Get(ctx, &outPath); err != nil {
@@ -567,9 +568,12 @@ func callEmbedQueryWithFailover(ctx workflow.Context, state *providerState, prov
 	return activities.EmbedQueryOutput{}, lastErr
 }
 
-func callLLMWithFailover(ctx workflow.Context, state *providerState, providerCount int, cooldown time.Duration, input activities.LLMGenerateInput, retryCounts map[string]int) (activities.LLMGenerateOutput, string, error) {
+func callLLMWithFailover(ctx workflow.Context, state *providerState, providerCount int, providerRefs []string, cooldown time.Duration, input activities.LLMGenerateInput, retryCounts map[string]int) (activities.LLMGenerateOutput, string, error) {
 	if retryCounts == nil {
 		retryCounts = map[string]int{}
+	}
+	if len(providerRefs) > 0 {
+		providerCount = len(providerRefs)
 	}
 	var lastErr error
 	for attempt := 0; attempt < providerCount*4; attempt++ {
@@ -577,6 +581,11 @@ func callLLMWithFailover(ctx workflow.Context, state *providerState, providerCou
 		if isProviderDisabled(ctx, state, idx) {
 			continue
 		}
+		selectedRef := ""
+		if idx < len(providerRefs) {
+			selectedRef = providerRefs[idx]
+		}
+		input.ProviderRef = selectedRef
 		input.ProviderIndex = idx
 		var out activities.LLMGenerateOutput
 		err := workflow.ExecuteActivity(ctx, "LLMGenerateActivity", input).Get(ctx, &out)
@@ -586,19 +595,21 @@ func callLLMWithFailover(ctx workflow.Context, state *providerState, providerCou
 		}
 		lastErr = err
 		errType := providers.ClassifyError(err)
-		_ = workflow.ExecuteActivity(ctx, "LogLLMCallActivity", activities.LogLLMCallInput{Operation: input.Operation, CorpusID: input.CorpusID, PaperID: input.PaperID, ProviderName: fmt.Sprintf("provider-%d", idx), RequestID: fmt.Sprintf("%s-%d", input.Operation, attempt), Status: "failed", ErrorType: string(errType)}).Get(ctx, nil)
+		providerName := fmt.Sprintf("provider-%d", idx)
+		if selectedRef != "" {
+			providerName = selectedRef
+		}
+		_ = workflow.ExecuteActivity(ctx, "LogLLMCallActivity", activities.LogLLMCallInput{Operation: input.Operation, CorpusID: input.CorpusID, PaperID: input.PaperID, ProviderName: providerName, RequestID: fmt.Sprintf("%s-%d", input.Operation, attempt), Status: "failed", ErrorType: string(errType)}).Get(ctx, nil)
 		key := fmt.Sprintf("llm-%s-%d", input.Operation, idx)
 		retryCounts[key]++
 		switch errType {
 		case providers.ErrorQuota:
 			disableProviderUntil(ctx, state, idx, cooldown)
 		case providers.ErrorRate:
-			if retryCounts[key] <= 2 {
-				workflow.Sleep(ctx, time.Duration(retryCounts[key]*2)*time.Second)
-				attempt--
-			} else {
-				disableProviderUntil(ctx, state, idx, 2*time.Minute)
+			if retryCounts[key] <= 1 {
+				workflow.Sleep(ctx, 2*time.Second)
 			}
+			disableProviderUntil(ctx, state, idx, 2*time.Minute)
 		case providers.ErrorTransient:
 			if retryCounts[key] <= 2 {
 				workflow.Sleep(ctx, time.Duration(retryCounts[key])*time.Second)

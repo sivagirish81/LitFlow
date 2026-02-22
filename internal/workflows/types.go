@@ -30,6 +30,7 @@ type SurveyBuildInput struct {
 	Questions       []string `json:"questions"`
 	EmbedProviders  int      `json:"embed_providers"`
 	LLMProviders    int      `json:"llm_providers"`
+	LLMProviderRefs []string `json:"llm_provider_refs,omitempty"`
 	CooldownSeconds int      `json:"cooldown_seconds"`
 	EmbedVersion    string   `json:"embed_version"`
 }
@@ -47,6 +48,7 @@ type BackfillInput struct {
 	PreferredEmbedProviderIndex int      `json:"preferred_embed_provider_index,omitempty"`
 	StrictEmbedProvider         bool     `json:"strict_embed_provider,omitempty"`
 	LLMProviders                int      `json:"llm_providers,omitempty"`
+	LLMProviderRefs             []string `json:"llm_provider_refs,omitempty"`
 	CooldownSeconds             int      `json:"cooldown_seconds,omitempty"`
 }
 
@@ -76,4 +78,32 @@ type SurveyProgress struct {
 	TotalTopics int               `json:"total_topics"`
 	DoneTopics  int               `json:"done_topics"`
 	TopicStatus map[string]string `json:"topic_status"`
+}
+
+type KGBackfillInput struct {
+	CorpusID        string   `json:"corpus_id"`
+	PromptVersion   string   `json:"prompt_version"`
+	ModelVersion    string   `json:"model_version"`
+	LLMProviders    int      `json:"llm_providers"`
+	LLMProviderRefs []string `json:"llm_provider_refs,omitempty"`
+	CooldownSeconds int      `json:"cooldown_seconds"`
+	MaxConcurrent   int      `json:"max_concurrent"`
+}
+
+type KGExtractPaperInput struct {
+	CorpusID        string   `json:"corpus_id"`
+	PaperID         string   `json:"paper_id"`
+	PromptVersion   string   `json:"prompt_version"`
+	ModelVersion    string   `json:"model_version"`
+	LLMProviders    int      `json:"llm_providers"`
+	LLMProviderRefs []string `json:"llm_provider_refs,omitempty"`
+	CooldownSeconds int      `json:"cooldown_seconds"`
+}
+
+type KGBackfillProgress struct {
+	CorpusID string            `json:"corpus_id"`
+	Total    int               `json:"total"`
+	Done     int               `json:"done"`
+	Failed   int               `json:"failed"`
+	PerPaper map[string]string `json:"per_paper_status"`
 }

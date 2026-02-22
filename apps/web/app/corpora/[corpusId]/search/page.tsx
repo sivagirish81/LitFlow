@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { CorpusNav } from "../../../../components/corpus-nav";
 import { api } from "../../../../lib/api";
 
 const EMBED_PROVIDER_KEY = "litflow.embedProvider";
@@ -80,7 +79,6 @@ export default function SearchPage({ params }: { params: { corpusId: string } })
         <p className="text-xs uppercase tracking-[0.22em] text-zinc-500">Corpus Search</p>
         <h1 className="mt-2 text-5xl font-semibold tracking-tight">Ask Evidence-Grounded Questions</h1>
         <p className="mt-3 max-w-3xl text-zinc-700">Search works best after ingestion completes. Ask focused questions, then inspect citations to verify source evidence quickly.</p>
-        <CorpusNav corpusId={params.corpusId} current="search" />
       </section>
 
       <section className="mt-6 grid gap-6 md:grid-cols-[1.15fr_0.85fr]">

@@ -140,6 +140,37 @@ func (m *Manager) FindLLMProviderByName(name string) (LLMProvider, ProviderRef, 
 	return nil, ProviderRef{}, false
 }
 
+func (m *Manager) FindLLMProviderIndex(raw string) int {
+	target := strings.ToLower(strings.TrimSpace(raw))
+	if target == "" {
+		return -1
+	}
+	for i := range m.llmProviders {
+		ref := m.llmProviders[i].Ref
+		candidates := []string{
+			strings.ToLower(strings.TrimSpace(ref.Raw)),
+			strings.ToLower(strings.TrimSpace(ref.Name)),
+		}
+		if ref.KeyAlias != "" {
+			candidates = append(candidates, strings.ToLower(strings.TrimSpace(ref.Name+":"+ref.KeyAlias)))
+		}
+		for _, c := range candidates {
+			if c == target {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func (m *Manager) LLMProviderRefs() []ProviderRef {
+	out := make([]ProviderRef, 0, len(m.llmProviders))
+	for i := range m.llmProviders {
+		out = append(out, m.llmProviders[i].Ref)
+	}
+	return out
+}
+
 func (m *Manager) EmbedProviderRefs() []ProviderRef {
 	out := make([]ProviderRef, 0, len(m.embedProviders))
 	for i := range m.embedProviders {

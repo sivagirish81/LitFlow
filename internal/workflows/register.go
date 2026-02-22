@@ -7,4 +7,6 @@ func Register(w worker.Worker) {
 	w.RegisterWorkflow(PaperProcessWorkflow)
 	w.RegisterWorkflow(SurveyBuildWorkflow)
 	w.RegisterWorkflow(BackfillWorkflow)
+	w.RegisterWorkflow(KGBackfillWorkflow)
+	w.RegisterWorkflow(KGExtractPaperWorkflow)
 }
