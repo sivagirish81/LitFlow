@@ -62,6 +62,36 @@ export const api = {
     req<{ workflow_id: string; run_id: string }>("/kg/backfill", { method: "POST", body: JSON.stringify(payload) }),
   kgExtractPaper: (paperId: string, payload: { corpus_id: string; prompt_version?: string; model_version?: string }) =>
     req<{ workflow_id: string; run_id: string }>(`/kg/papers/${encodeURIComponent(paperId)}/extract`, { method: "POST", body: JSON.stringify(payload) }),
+  kgIntelOverview: (corpusId: string) =>
+    req<{
+      top_method_families: Array<{ node_id: string; label: string; linked_methods: number; support_count: number; outperform_wins: number }>;
+      top_datasets: Array<{ node_id: string; label: string; usage_count: number; method_count: number }>;
+      top_outperformers: Array<{ node_id: string; label: string; score: number }>;
+    }>(`/kg/intel/overview?corpus_id=${encodeURIComponent(corpusId)}`),
+  kgIntelLineage: (corpusId: string, method: string, depth = 4) =>
+    req<{
+      root_method: { node_id: string; label: string; depth: number; year_first_seen: number };
+      tree_nodes: Array<{ node_id: string; label: string; depth: number; year_first_seen: number }>;
+      tree_edges: Array<{ source_id: string; source_name: string; target_id: string; target_name: string; edge_type: string; depth: number }>;
+      timeline: Array<{ year: number; count: number }>;
+      datasets: Array<{ node_id: string; label: string; usage_count: number; method_count: number }>;
+      top_descendants: Array<{ node_id: string; label: string; score: number }>;
+    }>(`/kg/intel/lineage?corpus_id=${encodeURIComponent(corpusId)}&method=${encodeURIComponent(method)}&depth=${depth}`),
+  kgIntelPerformance: (corpusId: string, topN = 20) =>
+    req<{ rows: Array<{ method: string; beaten_methods: number; wins: number; losses: number; win_rate: number; dataset_coverage: number; metric_coverage: number; dominance_score: number }> }>(
+      `/kg/intel/performance?corpus_id=${encodeURIComponent(corpusId)}&top_n=${topN}`
+    ),
+  kgIntelDatasets: (corpusId: string, topN = 10) =>
+    req<{
+      datasets: Array<{ node_id: string; label: string; usage_count: number; method_count: number }>;
+      usage_by_year: Array<{ dataset: string; year: number; count: number }>;
+      method_distribution: Array<{ dataset: string; method: string; share: number }>;
+    }>(`/kg/intel/datasets?corpus_id=${encodeURIComponent(corpusId)}&top_n=${topN}`),
+  kgIntelTrends: (corpusId: string, topN = 10) =>
+    req<{
+      family_series: Array<{ family: string; year: number; count: number }>;
+      emerging_methods: Array<{ node_id: string; label: string; score: number }>;
+    }>(`/kg/intel/trends?corpus_id=${encodeURIComponent(corpusId)}&top_n=${topN}`),
   kgLineage: (corpusId: string, methodName: string) =>
     req<{ nodes: Array<{ node_id: string; node_type: string; label: string }>; edges: Array<{ source_id: string; source_name: string; target_id: string; target_name: string; edge_type: string; depth: number }> }>(`/kg/lineage?corpus_id=${encodeURIComponent(corpusId)}&method_name=${encodeURIComponent(methodName)}`),
   kgQuery: (payload: { corpus_id: string; cypher: string }) =>

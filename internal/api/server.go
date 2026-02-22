@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -92,6 +93,11 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/kg/backfill", s.handleKGBackfill)
 	mux.HandleFunc("/kg/query", s.handleKGQuery)
 	mux.HandleFunc("/kg/lineage", s.handleKGLineage)
+	mux.HandleFunc("/kg/intel/overview", s.handleKGIntelOverview)
+	mux.HandleFunc("/kg/intel/lineage", s.handleKGIntelLineage)
+	mux.HandleFunc("/kg/intel/performance", s.handleKGIntelPerformance)
+	mux.HandleFunc("/kg/intel/datasets", s.handleKGIntelDatasets)
+	mux.HandleFunc("/kg/intel/trends", s.handleKGIntelTrends)
 	mux.HandleFunc("/kg/papers/", s.handleKGPaperScoped)
 	return withCORS(mux)
 }
@@ -914,6 +920,121 @@ func (s *Server) handleKGLineage(w http.ResponseWriter, r *http.Request) {
 		"nodes": nodes,
 		"edges": edges,
 	})
+}
+
+func (s *Server) handleKGIntelOverview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		return
+	}
+	corpusID := strings.TrimSpace(r.URL.Query().Get("corpus_id"))
+	if corpusID == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("corpus_id is required"))
+		return
+	}
+	out, err := s.graphRepo.GetIntelOverview(r.Context(), corpusID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleKGIntelLineage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		return
+	}
+	corpusID := strings.TrimSpace(r.URL.Query().Get("corpus_id"))
+	method := strings.TrimSpace(r.URL.Query().Get("method"))
+	depth := 4
+	if v := strings.TrimSpace(r.URL.Query().Get("depth")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			depth = n
+		}
+	}
+	if corpusID == "" || method == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("corpus_id and method are required"))
+		return
+	}
+	out, err := s.graphRepo.GetIntelLineage(r.Context(), corpusID, method, depth)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleKGIntelPerformance(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		return
+	}
+	corpusID := strings.TrimSpace(r.URL.Query().Get("corpus_id"))
+	topN := 20
+	if v := strings.TrimSpace(r.URL.Query().Get("top_n")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			topN = n
+		}
+	}
+	if corpusID == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("corpus_id is required"))
+		return
+	}
+	out, err := s.graphRepo.GetIntelPerformance(r.Context(), corpusID, topN)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleKGIntelDatasets(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		return
+	}
+	corpusID := strings.TrimSpace(r.URL.Query().Get("corpus_id"))
+	topN := 10
+	if v := strings.TrimSpace(r.URL.Query().Get("top_n")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			topN = n
+		}
+	}
+	if corpusID == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("corpus_id is required"))
+		return
+	}
+	out, err := s.graphRepo.GetIntelDatasets(r.Context(), corpusID, topN)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleKGIntelTrends(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		return
+	}
+	corpusID := strings.TrimSpace(r.URL.Query().Get("corpus_id"))
+	topN := 10
+	if v := strings.TrimSpace(r.URL.Query().Get("top_n")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			topN = n
+		}
+	}
+	if corpusID == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("corpus_id is required"))
+		return
+	}
+	out, err := s.graphRepo.GetIntelTrends(r.Context(), corpusID, topN)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func orderWithPreferredFirst(order []int, preferred int) []int {
