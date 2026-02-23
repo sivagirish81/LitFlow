@@ -19,6 +19,7 @@ export default function GraphPage({ params }: { params: { corpusId: string } }) 
   const [modelVersion, setModelVersion] = useState("kg-llm-v1");
   const [maxConcurrent, setMaxConcurrent] = useState(4);
   const [paperId, setPaperId] = useState("");
+  const [papers, setPapers] = useState<Array<{ paper_id: string; title?: string; filename: string }>>([]);
   const [wf, setWf] = useState<{ workflow_id: string; run_id: string; status: string } | null>(null);
 
   const [overview, setOverview] = useState<Awaited<ReturnType<typeof api.kgIntelOverview>> | null>(null);
@@ -57,6 +58,8 @@ export default function GraphPage({ params }: { params: { corpusId: string } }) 
   useEffect(() => {
     const run = async () => {
       try {
+        const papersRes = await api.getPapers(params.corpusId);
+        setPapers(papersRes.papers.map((p) => ({ paper_id: p.paper_id, title: p.title, filename: p.filename })));
         await Promise.all([loadGraph(), loadIntel()]);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Failed to load KG dashboard.");
@@ -146,16 +149,35 @@ export default function GraphPage({ params }: { params: { corpusId: string } }) 
       <section className="mt-6 rounded-3xl border border-black/10 bg-white/85 p-4">
         <h2 className="text-lg font-semibold">KG Extraction Workflows</h2>
         <div className="mt-3 grid gap-2 md:grid-cols-3">
-          <input className="rounded-lg border border-black/15 px-3 py-2 text-sm" value={promptVersion} onChange={(e) => setPromptVersion(e.target.value)} placeholder="Prompt Version (e.g., v1)" />
-          <input className="rounded-lg border border-black/15 px-3 py-2 text-sm" value={modelVersion} onChange={(e) => setModelVersion(e.target.value)} placeholder="Model Version Tag (e.g., kg-llm-v1)" />
-          <input className="rounded-lg border border-black/15 px-3 py-2 text-sm" type="number" value={maxConcurrent} onChange={(e) => setMaxConcurrent(Number(e.target.value) || 4)} placeholder="Max Concurrent Papers" />
+          <label className="space-y-1">
+            <span className="block text-xs font-semibold uppercase tracking-wide text-zinc-600">Prompt Version</span>
+            <input className="w-full rounded-lg border border-black/15 px-3 py-2 text-sm" value={promptVersion} onChange={(e) => setPromptVersion(e.target.value)} placeholder="v1" />
+          </label>
+          <label className="space-y-1">
+            <span className="block text-xs font-semibold uppercase tracking-wide text-zinc-600">Model Version Tag</span>
+            <input className="w-full rounded-lg border border-black/15 px-3 py-2 text-sm" value={modelVersion} onChange={(e) => setModelVersion(e.target.value)} placeholder="kg-llm-v1" />
+          </label>
+          <label className="space-y-1">
+            <span className="block text-xs font-semibold uppercase tracking-wide text-zinc-600">Max Concurrent Papers</span>
+            <input className="w-full rounded-lg border border-black/15 px-3 py-2 text-sm" type="number" value={maxConcurrent} onChange={(e) => setMaxConcurrent(Number(e.target.value) || 4)} placeholder="4" />
+          </label>
         </div>
+        <p className="mt-2 text-xs text-zinc-600">
+          `v1` = extraction prompt version, `kg-llm-v1` = model/profile label recorded with triples, `4` = papers processed in parallel in KG backfill.
+        </p>
         <div className="mt-3 flex flex-wrap gap-2">
           <button className="rounded-xl bg-teal px-4 py-2 text-sm text-white" onClick={startKGBackfill}>Start KG Backfill</button>
           <button className="rounded-xl border border-black/20 px-4 py-2 text-sm" onClick={() => void Promise.all([loadGraph(), loadIntel()])}>Refresh Insights</button>
         </div>
         <div className="mt-3 flex gap-2">
-          <input className="w-full rounded-lg border border-black/15 px-3 py-2 text-sm" value={paperId} onChange={(e) => setPaperId(e.target.value)} placeholder="paper_id for one-off extraction" />
+          <select className="w-full rounded-lg border border-black/15 px-3 py-2 text-sm" value={paperId} onChange={(e) => setPaperId(e.target.value)}>
+            <option value="">Select a paper for one-off extraction</option>
+            {papers.map((p) => (
+              <option key={p.paper_id} value={p.paper_id}>
+                {(p.title && p.title.trim()) ? p.title : p.filename}
+              </option>
+            ))}
+          </select>
           <button className="rounded-xl border border-black/20 px-4 py-2 text-sm" onClick={extractOnePaper}>Extract Paper</button>
         </div>
         {wf && <p className="mt-2 text-xs text-zinc-600">Workflow: {wf.workflow_id} ({wf.status})</p>}
@@ -193,6 +215,9 @@ export default function GraphPage({ params }: { params: { corpusId: string } }) 
               <input className="w-full rounded-lg border border-black/15 px-3 py-2 text-sm" value={lineageMethod} onChange={(e) => setLineageMethod(e.target.value)} placeholder="Method name (e.g., transformer)" />
               <button className="rounded-xl border border-black/20 px-4 py-2 text-sm" onClick={loadLineage}>Load</button>
             </div>
+            <p className="mt-2 text-xs text-zinc-600">
+              Enter a method family name (examples: `transformer`, `bert`, `qphh`, `invar`). Use names from Overview {">"} Top Method Families for best results.
+            </p>
             <div className="mt-3 text-sm text-zinc-700">Root: {lineage?.root_method?.label ?? "Not loaded"}</div>
           </Card>
           <Card title="Timeline">

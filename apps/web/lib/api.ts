@@ -46,7 +46,7 @@ export const api = {
   },
   startIngest: (corpusId: string) => req<{ workflow_id: string; run_id: string }>(`/corpora/${corpusId}/ingest`, { method: "POST" }),
   getProgress: (corpusId: string) => req<{ total: number; done: number; failed: number; per_paper_status: Record<string, string> }>(`/corpora/${corpusId}/progress`),
-  getPapers: (corpusId: string) => req<{ papers: Array<{ paper_id: string; filename: string; status: string; fail_reason?: string }> }>(`/corpora/${corpusId}/papers`),
+  getPapers: (corpusId: string) => req<{ papers: Array<{ paper_id: string; filename: string; title?: string; status: string; fail_reason?: string }> }>(`/corpora/${corpusId}/papers`),
   ask: (payload: { corpus_id: string; question: string; top_k?: number; embed_provider?: string; embed_version?: string }) => req<{ answer: string; citations: Array<{ ref_id: string; paper_id: string; title: string; filename?: string; paper_url?: string; chunk_id: string; snippet: string; summary?: string; score: number }>; embed_provider?: string; embed_model?: string; embed_version?: string }>("/ask", { method: "POST", body: JSON.stringify(payload) }),
   createSurvey: (payload: { corpus_id: string; topics: string[]; questions: string[] }) => req<{ survey_run_id: string }>("/survey", { method: "POST", body: JSON.stringify(payload) }),
   surveyProgress: (id: string) => req<{ total_topics: number; done_topics: number; topic_status: Record<string, string> }>(`/survey/${id}/progress`),

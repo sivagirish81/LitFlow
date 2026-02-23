@@ -3,6 +3,10 @@ package storage
 import (
 	"context"
 	"fmt"
+	"math"
+	"regexp"
+	"sort"
+	"strings"
 )
 
 type IntelOverview struct {
@@ -115,21 +119,34 @@ LEFT JOIN graph_edges e ON e.corpus_id=n.corpus_id AND (e.source_node_id=n.node_
 WHERE n.corpus_id=$1::uuid AND n.node_type='method'
 GROUP BY n.node_id, n.label
 ORDER BY linked_methods DESC, support_count DESC
-LIMIT 5`, corpusID)
+LIMIT 300`, corpusID)
 	if err != nil {
 		return IntelOverview{}, fmt.Errorf("overview methods query: %w", err)
 	}
 	defer rows.Close()
+	methodAgg := map[string]IntelMethodFamily{}
 	for rows.Next() {
 		var m IntelMethodFamily
 		if err := rows.Scan(&m.NodeID, &m.Label, &m.LinkedMethods, &m.SupportCount, &m.OutperformWins); err != nil {
 			return IntelOverview{}, fmt.Errorf("overview methods scan: %w", err)
 		}
-		out.TopMethodFamilies = append(out.TopMethodFamilies, m)
+		key := canonicalMethodLabel(m.Label)
+		if key == "" || isGenericMethodLabel(key) {
+			continue
+		}
+		cur := methodAgg[key]
+		if cur.NodeID == "" {
+			cur = IntelMethodFamily{NodeID: m.NodeID, Label: key}
+		}
+		cur.LinkedMethods += m.LinkedMethods
+		cur.SupportCount += m.SupportCount
+		cur.OutperformWins += m.OutperformWins
+		methodAgg[key] = cur
 	}
 	if err := rows.Err(); err != nil {
 		return IntelOverview{}, err
 	}
+	out.TopMethodFamilies = topMethodFamilies(methodAgg, 5)
 
 	dsRows, err := r.db.Pool.Query(ctx, `
 SELECT d.node_id, d.label,
@@ -144,21 +161,35 @@ JOIN graph_nodes m ON m.corpus_id=d.corpus_id AND m.node_type='method' AND (m.no
 WHERE d.corpus_id=$1::uuid AND d.node_type='dataset'
 GROUP BY d.node_id, d.label
 ORDER BY usage_count DESC
-LIMIT 5`, corpusID)
+LIMIT 500`, corpusID)
 	if err != nil {
 		return IntelOverview{}, fmt.Errorf("overview datasets query: %w", err)
 	}
 	defer dsRows.Close()
+	datasetAgg := map[string]IntelDatasetStat{}
 	for dsRows.Next() {
 		var d IntelDatasetStat
 		if err := dsRows.Scan(&d.NodeID, &d.Label, &d.UsageCount, &d.MethodCount); err != nil {
 			return IntelOverview{}, fmt.Errorf("overview datasets scan: %w", err)
 		}
-		out.TopDatasets = append(out.TopDatasets, d)
+		key := canonicalDatasetLabel(d.Label)
+		if key == "" || isLowQualityDatasetLabel(key) {
+			continue
+		}
+		cur := datasetAgg[key]
+		if cur.NodeID == "" {
+			cur = IntelDatasetStat{NodeID: d.NodeID, Label: key}
+		}
+		cur.UsageCount += d.UsageCount
+		if d.MethodCount > cur.MethodCount {
+			cur.MethodCount = d.MethodCount
+		}
+		datasetAgg[key] = cur
 	}
 	if err := dsRows.Err(); err != nil {
 		return IntelOverview{}, err
 	}
+	out.TopDatasets = topDatasets(datasetAgg, 5)
 
 	winRows, err := r.db.Pool.Query(ctx, `
 SELECT n.node_id, n.label, COUNT(*)::float AS score
@@ -167,19 +198,33 @@ JOIN graph_edges e ON e.corpus_id=n.corpus_id AND e.source_node_id=n.node_id AND
 WHERE n.corpus_id=$1::uuid AND n.node_type='method'
 GROUP BY n.node_id, n.label
 ORDER BY score DESC
-LIMIT 5`, corpusID)
+LIMIT 300`, corpusID)
 	if err != nil {
 		return IntelOverview{}, fmt.Errorf("overview outperformers query: %w", err)
 	}
 	defer winRows.Close()
+	winAgg := map[string]IntelMethodStat{}
 	for winRows.Next() {
 		var s IntelMethodStat
 		if err := winRows.Scan(&s.NodeID, &s.Label, &s.Score); err != nil {
 			return IntelOverview{}, fmt.Errorf("overview outperformers scan: %w", err)
 		}
-		out.TopOutperformers = append(out.TopOutperformers, s)
+		key := canonicalMethodLabel(s.Label)
+		if key == "" || isGenericMethodLabel(key) {
+			continue
+		}
+		cur := winAgg[key]
+		if cur.NodeID == "" {
+			cur = IntelMethodStat{NodeID: s.NodeID, Label: key}
+		}
+		cur.Score += s.Score
+		winAgg[key] = cur
 	}
-	return out, winRows.Err()
+	if err := winRows.Err(); err != nil {
+		return IntelOverview{}, err
+	}
+	out.TopOutperformers = topMethodStats(winAgg, 5)
+	return out, nil
 }
 
 func (r *GraphRepo) GetIntelLineage(ctx context.Context, corpusID, method string, depth int) (IntelLineage, error) {
@@ -418,20 +463,74 @@ FROM methods m
 JOIN win_loss w ON w.node_id=m.node_id
 JOIN coverage c ON c.node_id=m.node_id
 ORDER BY dominance_score DESC, w.wins DESC
-LIMIT $2`, corpusID, topN)
+LIMIT 500`, corpusID)
 	if err != nil {
 		return IntelPerformance{}, fmt.Errorf("performance matrix query: %w", err)
 	}
 	defer rows.Close()
-	out := IntelPerformance{}
+	type agg struct {
+		beatenMethods   int
+		wins            int
+		losses          int
+		datasetCoverage int
+		metricCoverage  int
+	}
+	perfAgg := map[string]agg{}
 	for rows.Next() {
 		var rrow IntelPerformanceRow
 		if err := rows.Scan(&rrow.Method, &rrow.BeatenMethods, &rrow.Wins, &rrow.Losses, &rrow.WinRate, &rrow.DatasetCoverage, &rrow.MetricCoverage, &rrow.DominanceScore); err != nil {
 			return IntelPerformance{}, fmt.Errorf("performance matrix scan: %w", err)
 		}
-		out.Rows = append(out.Rows, rrow)
+		key := canonicalMethodLabel(rrow.Method)
+		if key == "" || isGenericMethodLabel(key) {
+			continue
+		}
+		cur := perfAgg[key]
+		cur.beatenMethods += rrow.BeatenMethods
+		cur.wins += rrow.Wins
+		cur.losses += rrow.Losses
+		if rrow.DatasetCoverage > cur.datasetCoverage {
+			cur.datasetCoverage = rrow.DatasetCoverage
+		}
+		if rrow.MetricCoverage > cur.metricCoverage {
+			cur.metricCoverage = rrow.MetricCoverage
+		}
+		perfAgg[key] = cur
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return IntelPerformance{}, err
+	}
+	out := IntelPerformance{Rows: make([]IntelPerformanceRow, 0, len(perfAgg))}
+	for method, a := range perfAgg {
+		winRate := 0.0
+		if a.wins+a.losses > 0 {
+			winRate = float64(a.wins) / float64(a.wins+a.losses)
+		}
+		dominance := float64(a.wins-a.losses) * math.Log1p(float64(maxInt(1, a.datasetCoverage+a.metricCoverage)))
+		out.Rows = append(out.Rows, IntelPerformanceRow{
+			Method:          method,
+			BeatenMethods:   a.beatenMethods,
+			Wins:            a.wins,
+			Losses:          a.losses,
+			WinRate:         winRate,
+			DatasetCoverage: a.datasetCoverage,
+			MetricCoverage:  a.metricCoverage,
+			DominanceScore:  dominance,
+		})
+	}
+	sort.Slice(out.Rows, func(i, j int) bool {
+		if out.Rows[i].DominanceScore != out.Rows[j].DominanceScore {
+			return out.Rows[i].DominanceScore > out.Rows[j].DominanceScore
+		}
+		if out.Rows[i].Wins != out.Rows[j].Wins {
+			return out.Rows[i].Wins > out.Rows[j].Wins
+		}
+		return out.Rows[i].Method < out.Rows[j].Method
+	})
+	if len(out.Rows) > topN {
+		out.Rows = out.Rows[:topN]
+	}
+	return out, nil
 }
 
 func (r *GraphRepo) GetIntelDatasets(ctx context.Context, corpusID string, topN int) (IntelDatasetDominance, error) {
@@ -611,4 +710,154 @@ LIMIT 10`, corpusID)
 		}
 	}
 	return out, nil
+}
+
+var nonAlphaNum = regexp.MustCompile(`[^a-z0-9\s]`)
+var multiSpace = regexp.MustCompile(`\s+`)
+
+func normalizeLabel(s string) string {
+	x := strings.TrimSpace(strings.ToLower(s))
+	x = strings.ReplaceAll(x, "_", " ")
+	x = strings.ReplaceAll(x, "-", " ")
+	x = nonAlphaNum.ReplaceAllString(x, " ")
+	x = multiSpace.ReplaceAllString(x, " ")
+	return strings.TrimSpace(x)
+}
+
+func canonicalMethodLabel(s string) string {
+	x := normalizeLabel(s)
+	if x == "" {
+		return ""
+	}
+	// Merge common variant suffixes: "qphh expanded", "qphh plain" -> "qphh"
+	parts := strings.Fields(x)
+	if len(parts) >= 2 {
+		last := parts[len(parts)-1]
+		if last == "base" || last == "variant" {
+			x = strings.Join(parts[:len(parts)-1], " ")
+		}
+	}
+	// Drop generic trailing qualifiers.
+	x = strings.TrimSuffix(x, " method")
+	x = strings.TrimSuffix(x, " algorithm")
+	x = strings.TrimSuffix(x, " model")
+	return strings.TrimSpace(x)
+}
+
+func canonicalDatasetLabel(s string) string {
+	x := normalizeLabel(s)
+	if x == "" {
+		return ""
+	}
+	x = strings.TrimSuffix(x, " dataset")
+	x = strings.TrimSuffix(x, " datasets")
+	return strings.TrimSpace(x)
+}
+
+func isGenericMethodLabel(x string) bool {
+	if x == "" {
+		return true
+	}
+	blacklist := map[string]bool{
+		"proposed": true, "proposed method": true, "proposed algorithm": true,
+		"proposed approach": true, "existing studies": true, "this paper": true,
+		"method": true, "algorithm": true, "model": true, "baseline": true,
+		"approach": true,
+	}
+	if blacklist[x] {
+		return true
+	}
+	if strings.HasPrefix(x, "proposed ") || strings.HasPrefix(x, "existing ") {
+		return true
+	}
+	return false
+}
+
+func isLowQualityDatasetLabel(x string) bool {
+	if x == "" {
+		return true
+	}
+	// Filter quantity-like or generic fragments masquerading as datasets.
+	badContains := []string{
+		"users", "locations", "resources", "given resources", "latency measurements",
+		"cloud computing environments", "cost", "energy consumption", "servers",
+	}
+	for _, b := range badContains {
+		if strings.Contains(x, b) {
+			return true
+		}
+	}
+	// Tiny generic nouns are usually extraction noise.
+	if x == "dataset" || x == "data" || x == "evaluation" {
+		return true
+	}
+	return false
+}
+
+func topMethodFamilies(m map[string]IntelMethodFamily, n int) []IntelMethodFamily {
+	out := make([]IntelMethodFamily, 0, len(m))
+	for _, v := range m {
+		out = append(out, v)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].LinkedMethods != out[j].LinkedMethods {
+			return out[i].LinkedMethods > out[j].LinkedMethods
+		}
+		if out[i].SupportCount != out[j].SupportCount {
+			return out[i].SupportCount > out[j].SupportCount
+		}
+		return out[i].Label < out[j].Label
+	})
+	if len(out) > n {
+		out = out[:n]
+	}
+	return out
+}
+
+func topMethodStats(m map[string]IntelMethodStat, n int) []IntelMethodStat {
+	out := make([]IntelMethodStat, 0, len(m))
+	for _, v := range m {
+		out = append(out, v)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Score != out[j].Score {
+			return out[i].Score > out[j].Score
+		}
+		return out[i].Label < out[j].Label
+	})
+	if len(out) > n {
+		out = out[:n]
+	}
+	return out
+}
+
+func topDatasets(m map[string]IntelDatasetStat, n int) []IntelDatasetStat {
+	out := make([]IntelDatasetStat, 0, len(m))
+	for _, v := range m {
+		// Require some cross-method support for quality.
+		if v.MethodCount < 1 {
+			continue
+		}
+		out = append(out, v)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].UsageCount != out[j].UsageCount {
+			return out[i].UsageCount > out[j].UsageCount
+		}
+		if out[i].MethodCount != out[j].MethodCount {
+			return out[i].MethodCount > out[j].MethodCount
+		}
+		return out[i].Label < out[j].Label
+	})
+	if len(out) > n {
+		out = out[:n]
+	}
+	return out
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

@@ -1195,6 +1195,8 @@ func toAPIError(status int, err error) apiError {
 	if status >= 400 && status < 500 && err != nil {
 		low := strings.ToLower(err.Error())
 		switch {
+		case strings.Contains(low, "lineage root not found"):
+			msg = "Method not found in this corpus graph. Try a method from Overview -> Top Method Families."
 		case strings.Contains(low, "name is required"):
 			msg = "Corpus name is required."
 		case strings.Contains(low, "corpus_id and question are required"):
