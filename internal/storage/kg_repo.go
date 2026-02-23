@@ -73,7 +73,9 @@ func (r *GraphRepo) UpsertKGTriples(ctx context.Context, triples []KGTripleInput
 	if err != nil {
 		return fmt.Errorf("begin kg triples tx: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
 
 	for _, t := range triples {
 		srcNodeID := fmt.Sprintf("%s:%s:%s", strings.ToLower(t.SourceType), t.CorpusID, slug(t.SourceName))
