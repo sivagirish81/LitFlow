@@ -240,17 +240,17 @@ export default function CorporaPage() {
 
   return (
     <main className="mx-auto max-w-6xl p-8">
+      {activeCorpus && (
+        <div className="mb-4 flex flex-wrap gap-2 text-sm">
+          <Link className="rounded-full border border-black/20 bg-white px-4 py-2 hover:bg-black/5" href={`/corpora/${activeCorpus}/search`}>Open Semantic Search</Link>
+          <Link className="rounded-full border border-black/20 bg-white px-4 py-2 hover:bg-black/5" href={`/corpora/${activeCorpus}/survey`}>Open Survey Builder</Link>
+          <Link className="rounded-full border border-black/20 bg-white px-4 py-2 hover:bg-black/5" href={`/corpora/${activeCorpus}/graph`}>Open Knowledge Graph</Link>
+        </div>
+      )}
       <section className="rounded-3xl border border-black/10 bg-white/70 p-8 shadow-lg">
         <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Corpus Workspace</p>
         <h1 className="mt-2 text-5xl font-semibold tracking-tight">Build a Focused Corpus</h1>
         <p className="mt-3 max-w-3xl text-zinc-700">Create a corpus per topic, upload PDFs to that corpus, run ingest, then use Search/Survey/Graph to explore evidence. Each corpus is isolated so results stay relevant.</p>
-        {activeCorpus && (
-          <div className="mt-5 flex flex-wrap gap-2 text-sm">
-            <Link className="rounded-full border border-black/20 bg-white px-4 py-2 hover:bg-black/5" href={`/corpora/${activeCorpus}/search`}>Open Semantic Search</Link>
-            <Link className="rounded-full border border-black/20 bg-white px-4 py-2 hover:bg-black/5" href={`/corpora/${activeCorpus}/survey`}>Open Survey Builder</Link>
-            <Link className="rounded-full border border-black/20 bg-white px-4 py-2 hover:bg-black/5" href={`/corpora/${activeCorpus}/graph`}>Open Knowledge Graph</Link>
-          </div>
-        )}
         <div className="mt-5 grid gap-3 text-sm md:grid-cols-3">
           <div className="rounded-2xl border border-black/10 bg-white p-4"><span className="font-semibold">1. Create Corpus</span><p className="mt-1 text-zinc-600">Name by theme, e.g. "RAG evaluation papers".</p></div>
           <div className="rounded-2xl border border-black/10 bg-white p-4"><span className="font-semibold">2. Upload PDFs</span><p className="mt-1 text-zinc-600">Upload one or many PDFs into that corpus.</p></div>
