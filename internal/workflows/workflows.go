@@ -255,7 +255,18 @@ func PaperProcessWorkflow(ctx workflow.Context, input PaperProcessInput) (string
 }
 
 func SurveyBuildWorkflow(ctx workflow.Context, input SurveyBuildInput) (string, error) {
-	progress := SurveyProgress{SurveyRunID: input.SurveyRunID, CorpusID: input.CorpusID, TotalTopics: len(input.Topics), TopicStatus: map[string]string{}}
+	topic := strings.TrimSpace(input.Prompt)
+	if topic == "" && len(input.Topics) > 0 {
+		topic = strings.TrimSpace(input.Topics[0])
+	}
+	if topic == "" {
+		return "", fmt.Errorf("survey prompt/topic is required")
+	}
+	topicLabel := topic
+	if len(topicLabel) > 64 {
+		topicLabel = topicLabel[:61] + "..."
+	}
+	progress := SurveyProgress{SurveyRunID: input.SurveyRunID, CorpusID: input.CorpusID, TotalTopics: 1, TopicStatus: map[string]string{}}
 	if err := workflow.SetQueryHandler(ctx, QueryGetSurveyProgress, func() (SurveyProgress, error) { return progress, nil }); err != nil {
 		return "", err
 	}
@@ -282,78 +293,105 @@ func SurveyBuildWorkflow(ctx workflow.Context, input SurveyBuildInput) (string, 
 	cooldown := durationOrDefault(input.CooldownSeconds, 900)
 	embedState := newProviderState()
 	llmState := newProviderState()
+	topK := input.RetrievalTopK
+	if topK <= 0 {
+		topK = 14
+	}
 
-	report := strings.Builder{}
-	report.WriteString("# Literature Survey\n\n")
-	report.WriteString("Corpus: `" + input.CorpusID + "`\n\n")
+	progress.TopicStatus[topicLabel] = "retrieving"
+	eq, err := callEmbedQueryWithFailover(ctx, &embedState, embedProviders, cooldown, activities.EmbedQueryInput{
+		Operation: "survey_topic_embed",
+		Text:      topic,
+	}, nil)
+	if err != nil {
+		progress.TopicStatus[topicLabel] = "failed"
+		return "", err
+	}
+	var retrieved activities.SearchChunksOutput
+	if err := workflow.ExecuteActivity(ctx, "SearchChunksActivity", activities.SearchChunksInput{
+		CorpusID:         input.CorpusID,
+		QueryVec:         eq.Vector,
+		TopK:             topK,
+		EmbeddingVersion: defaultEmbedVersion(input.EmbedVersion),
+	}).Get(ctx, &retrieved); err != nil {
+		progress.TopicStatus[topicLabel] = "failed"
+		return "", err
+	}
+	for _, c := range retrieved.Results {
+		_ = workflow.ExecuteActivity(ctx, "UpsertTopicGraphActivity", activities.UpsertTopicGraphInput{
+			CorpusID: input.CorpusID,
+			Topic:    topic,
+			PaperID:  c.PaperID,
+			Title:    c.Title,
+			ChunkID:  c.ChunkID,
+			Score:    c.Score,
+		}).Get(ctx, nil)
+	}
+	progress.TopicStatus[topicLabel] = "drafting"
 
-	for _, topic := range input.Topics {
-		progress.TopicStatus[topic] = "retrieving"
-		eq, err := callEmbedQueryWithFailover(ctx, &embedState, embedProviders, cooldown, activities.EmbedQueryInput{Operation: "survey_topic_embed", Text: topic}, nil)
-		if err != nil {
-			progress.TopicStatus[topic] = "failed"
-			continue
+	refs, contextWindow := buildSurveyReferences(retrieved.Results)
+	paperIDs := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if strings.TrimSpace(ref.PaperID) != "" {
+			paperIDs = append(paperIDs, ref.PaperID)
 		}
-		var retrieved activities.SearchChunksOutput
-		if err := workflow.ExecuteActivity(ctx, "SearchChunksActivity", activities.SearchChunksInput{
-			CorpusID:         input.CorpusID,
-			QueryVec:         eq.Vector,
-			TopK:             8,
-			EmbeddingVersion: defaultEmbedVersion(input.EmbedVersion),
-		}).Get(ctx, &retrieved); err != nil {
-			progress.TopicStatus[topic] = "failed"
-			continue
-		}
-		for _, c := range retrieved.Results {
-			_ = workflow.ExecuteActivity(ctx, "UpsertTopicGraphActivity", activities.UpsertTopicGraphInput{
-				CorpusID: input.CorpusID,
-				Topic:    topic,
-				PaperID:  c.PaperID,
-				Title:    c.Title,
-				ChunkID:  c.ChunkID,
-				Score:    c.Score,
-			}).Get(ctx, nil)
-		}
-		progress.TopicStatus[topic] = "drafting"
-
-		contextWindow := toCitationContext(retrieved.Results)
-		outline, _, _ := callLLMWithFailover(ctx, &llmState, llmProviders, input.LLMProviderRefs, cooldown, activities.LLMGenerateInput{Operation: "survey_outline", CorpusID: input.CorpusID, Prompt: "Create an outline for topic: " + topic, Context: contextWindow}, nil)
-
-		sectionInput := activities.LLMGenerateInput{Operation: "survey_section", CorpusID: input.CorpusID, Prompt: "Draft literature survey section for topic: " + topic, Context: contextWindow}
-		section, sectionErrType, sectionErr := callLLMWithFailover(ctx, &llmState, llmProviders, input.LLMProviderRefs, cooldown, sectionInput, nil)
-		if sectionErr != nil && sectionErrType == string(providers.ErrorContext) {
-			reduced := contextWindow
-			if len(reduced) > 3 {
-				reduced = reduced[:3]
+	}
+	if len(paperIDs) > 0 {
+		var metaOut activities.GetSurveyPaperMetaOutput
+		if err := workflow.ExecuteActivity(ctx, "GetSurveyPaperMetaActivity", activities.GetSurveyPaperMetaInput{
+			CorpusID: input.CorpusID,
+			PaperIDs: paperIDs,
+		}).Get(ctx, &metaOut); err == nil {
+			metaByID := make(map[string]activities.SurveyPaperMeta, len(metaOut.Papers))
+			for _, m := range metaOut.Papers {
+				metaByID[m.PaperID] = m
 			}
-			sectionInput.Context = reduced
-			section, _, sectionErr = callLLMWithFailover(ctx, &llmState, llmProviders, input.LLMProviderRefs, cooldown, sectionInput, nil)
+			for i := range refs {
+				m, ok := metaByID[refs[i].PaperID]
+				if !ok {
+					continue
+				}
+				if strings.TrimSpace(m.Title) != "" {
+					refs[i].Title = strings.TrimSpace(m.Title)
+				}
+				refs[i].Authors = strings.TrimSpace(m.Authors)
+				refs[i].Year = m.Year
+				refs[i].Filename = strings.TrimSpace(m.Filename)
+			}
 		}
+	}
+	sectionInput := activities.LLMGenerateInput{
+		Operation: "survey_ieee_latex",
+		CorpusID:  input.CorpusID,
+		Prompt:    buildLatexPrompt(topic, refs),
+		Context:   contextWindow,
+	}
+	section, sectionErrType, sectionErr := callLLMWithFailover(ctx, &llmState, llmProviders, input.LLMProviderRefs, cooldown, sectionInput, nil)
+	if sectionErr != nil && sectionErrType == string(providers.ErrorContext) {
+		reduced := contextWindow
+		if len(reduced) > 5 {
+			reduced = reduced[:5]
+		}
+		sectionInput.Context = reduced
+		section, _, sectionErr = callLLMWithFailover(ctx, &llmState, llmProviders, input.LLMProviderRefs, cooldown, sectionInput, nil)
+	}
 
-		report.WriteString("## " + topic + "\n\n")
-		if strings.TrimSpace(outline.Text) != "" {
-			report.WriteString("### Outline\n")
-			report.WriteString(outline.Text + "\n\n")
-		}
-		report.WriteString("### Discussion\n")
-		if sectionErr != nil || strings.TrimSpace(section.Text) == "" {
-			report.WriteString("No generated section text.\n\n")
-		} else {
-			report.WriteString(section.Text + "\n\n")
-		}
-		report.WriteString("### Citations\n")
-		for _, c := range retrieved.Results {
-			report.WriteString("- [" + c.Title + ":" + c.ChunkID + "] score=" + formatScore(c.Score) + "\n")
-		}
-		report.WriteString("\n")
-		progress.TopicStatus[topic] = "done"
-		progress.DoneTopics++
+	report := buildLatexDocument(topic, refs, cleanLLMDocument(section.Text), sectionErr != nil)
+	if strings.TrimSpace(input.OutputFormat) == "" {
+		input.OutputFormat = "latex"
 	}
 
 	var reportOut activities.WriteSurveyReportOutput
-	if err := workflow.ExecuteActivity(ctx, "WriteSurveyReportActivity", activities.WriteSurveyReportInput{CorpusID: input.CorpusID, SurveyRunID: input.SurveyRunID, Report: report.String()}).Get(ctx, &reportOut); err != nil {
+	if err := workflow.ExecuteActivity(ctx, "WriteSurveyReportActivity", activities.WriteSurveyReportInput{
+		CorpusID:     input.CorpusID,
+		SurveyRunID:  input.SurveyRunID,
+		Report:       report,
+		OutputFormat: input.OutputFormat,
+	}).Get(ctx, &reportOut); err != nil {
 		return "", err
 	}
+	progress.TopicStatus[topicLabel] = "done"
+	progress.DoneTopics = 1
 	_ = workflow.ExecuteActivity(ctx, "UpdateSurveyRunActivity", activities.UpdateSurveyRunInput{SurveyRunID: input.SurveyRunID, Status: "completed", OutPath: reportOut.OutPath}).Get(ctx, nil)
 	return reportOut.OutPath, nil
 }
@@ -690,16 +728,182 @@ func sanitizeID(s string) string {
 	return s
 }
 
-func formatScore(v float64) string {
-	return fmt.Sprintf("%.4f", v)
+type surveyReference struct {
+	Key      string
+	PaperID  string
+	Title    string
+	Authors  string
+	Year     int
+	Filename string
+	ChunkIDs []string
 }
 
-func toCitationContext(results []activities.SearchChunk) []string {
-	out := make([]string, 0, len(results))
+func buildSurveyReferences(results []activities.SearchChunk) ([]surveyReference, []string) {
+	refs := make([]surveyReference, 0)
+	paperToIdx := map[string]int{}
+	context := make([]string, 0, len(results))
 	for _, c := range results {
-		out = append(out, fmt.Sprintf("[%s:%s] %s", c.Title, c.ChunkID, c.Text))
+		paperID := strings.TrimSpace(c.PaperID)
+		if paperID == "" {
+			paperID = c.ChunkID
+		}
+		idx, ok := paperToIdx[paperID]
+		if !ok {
+			idx = len(refs)
+			paperToIdx[paperID] = idx
+			title := strings.TrimSpace(c.Title)
+			if title == "" {
+				title = "Untitled Source"
+			}
+			refs = append(refs, surveyReference{
+				Key:     fmt.Sprintf("ref%d", idx+1),
+				PaperID: paperID,
+				Title:   title,
+			})
+		}
+		if c.ChunkID != "" {
+			refs[idx].ChunkIDs = append(refs[idx].ChunkIDs, c.ChunkID)
+		}
+		context = append(context, fmt.Sprintf(
+			"Source %s | Title: %s | Chunk: %s | Evidence: %s",
+			refs[idx].Key,
+			refs[idx].Title,
+			c.ChunkID,
+			latexSanitizeContext(c.Text),
+		))
 	}
-	return out
+	return refs, context
+}
+
+func latexSanitizeContext(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > 1400 {
+		s = s[:1400] + "..."
+	}
+	return s
+}
+
+func buildLatexPrompt(topic string, refs []surveyReference) string {
+	refLines := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		refLines = append(refLines, fmt.Sprintf("- %s: %s", ref.Key, ref.Title))
+	}
+	return strings.Join([]string{
+		"Write a citation-grounded literature survey in LaTeX body format for this topic:",
+		topic,
+		"",
+		"Output requirements:",
+		"1. Output ONLY LaTeX content for the body (no \\documentclass, no bibliography environment, no code fences).",
+		"2. Include exactly one \\section{Related Work}; do not create one section per individual paper.",
+		"3. The Related Work section must synthesize papers thematically and compare methods/findings.",
+		"4. Use inline citation keys like [ref1], [ref2] directly in text (do not use \\cite).",
+		"5. Every source key listed below must appear at least once in the Related Work section.",
+		"6. Every factual claim must cite one or more listed keys; do not cite any key outside this list.",
+		"7. Do not include a bibliography or references section.",
+		"8. If evidence is weak, explicitly state limitations.",
+		"",
+		"Allowed citation keys:",
+		strings.Join(refLines, "\n"),
+	}, "\n")
+}
+
+func cleanLLMDocument(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "```latex")
+	s = strings.TrimPrefix(s, "```tex")
+	s = strings.TrimPrefix(s, "```")
+	s = strings.TrimSuffix(s, "```")
+	s = strings.TrimSpace(s)
+	if strings.Contains(s, "\\begin{document}") {
+		if parts := strings.Split(s, "\\begin{document}"); len(parts) > 1 {
+			s = parts[1]
+		}
+	}
+	if strings.Contains(s, "\\end{document}") {
+		if parts := strings.Split(s, "\\end{document}"); len(parts) > 0 {
+			s = parts[0]
+		}
+	}
+	return strings.TrimSpace(s)
+}
+
+func buildLatexDocument(topic string, refs []surveyReference, body string, generationFailed bool) string {
+	var b strings.Builder
+	b.WriteString("\\documentclass[conference]{IEEEtran}\n")
+	b.WriteString("\\usepackage[hidelinks]{hyperref}\n\n")
+	b.WriteString("\\title{Literature Survey: " + latexEscape(topic) + "}\n")
+	b.WriteString("\\author{LitFlow Automated Draft}\n\n")
+	b.WriteString("\\begin{document}\n")
+	b.WriteString("\\maketitle\n\n")
+	if strings.TrimSpace(body) == "" {
+		b.WriteString("\\begin{abstract}\n")
+		b.WriteString("This draft was generated from retrieved evidence but requires manual completion due to limited model output.\n")
+		b.WriteString("\\end{abstract}\n\n")
+		b.WriteString("\\section{Related Work}\n")
+		b.WriteString("This section summarizes the retrieved conference literature for the topic and requires manual expansion.\n")
+		b.WriteString("The current evidence pool includes " + inlineRefMentions(refs) + ".\n\n")
+	} else {
+		if !hasRelatedWorkSection(body) {
+			b.WriteString("\\section{Related Work}\n")
+			b.WriteString("This section synthesizes the retrieved conference literature for the topic. ")
+			b.WriteString("Core references considered in this synthesis include " + inlineRefMentions(refs) + ".\n\n")
+		}
+		b.WriteString(body + "\n\n")
+	}
+	if generationFailed {
+		b.WriteString("\\section*{Generation Note}\n")
+		b.WriteString("Model generation encountered an issue; review and expand this draft manually.\n\n")
+	}
+	b.WriteString("\\section*{Source Papers}\n")
+	b.WriteString("\\begin{itemize}\n")
+	for _, ref := range refs {
+		title := latexEscape(strings.TrimSpace(ref.Title))
+		if title == "" {
+			title = "Untitled paper"
+		}
+		b.WriteString("\\item [" + latexEscape(ref.Key) + "] " + title + "\n")
+	}
+	b.WriteString("\\end{itemize}\n\n")
+	b.WriteString("\\end{document}\n")
+	return b.String()
+}
+
+func hasRelatedWorkSection(body string) bool {
+	lower := strings.ToLower(body)
+	return strings.Contains(lower, "\\section{related work}")
+}
+
+func inlineRefMentions(refs []surveyReference) string {
+	if len(refs) == 0 {
+		return "the retrieved sources"
+	}
+	keys := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		keys = append(keys, "["+ref.Key+"]")
+	}
+	return strings.Join(keys, ", ")
+}
+
+func latexEscape(s string) string {
+	r := strings.NewReplacer(
+		`\`, `\textbackslash{}`,
+		`{`, `\{`,
+		`}`, `\}`,
+		`$`, `\$`,
+		`&`, `\&`,
+		`#`, `\#`,
+		`_`, `\_`,
+		`%`, `\%`,
+		`~`, `\textasciitilde{}`,
+		`^`, `\textasciicircum{}`,
+	)
+	return r.Replace(strings.TrimSpace(s))
 }
 
 func durationOrDefault(seconds int, fallback int) time.Duration {

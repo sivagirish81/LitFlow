@@ -548,20 +548,32 @@ func (s *Server) handleSurvey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		CorpusID  string   `json:"corpus_id"`
-		Topics    []string `json:"topics"`
-		Questions []string `json:"questions"`
+		CorpusID      string   `json:"corpus_id"`
+		Prompt        string   `json:"prompt"`
+		Topics        []string `json:"topics"`
+		Questions     []string `json:"questions"`
+		OutputFormat  string   `json:"output_format"`
+		RetrievalTopK int      `json:"retrieval_top_k"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid json: %w", err))
 		return
 	}
-	if strings.TrimSpace(req.CorpusID) == "" || len(req.Topics) == 0 {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("corpus_id and at least one topic are required"))
+	req.CorpusID = strings.TrimSpace(req.CorpusID)
+	req.Prompt = strings.TrimSpace(req.Prompt)
+	if req.OutputFormat == "" {
+		req.OutputFormat = "latex"
+	}
+	if req.CorpusID == "" || (req.Prompt == "" && len(req.Topics) == 0) {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("corpus_id and prompt (or at least one topic) are required"))
 		return
 	}
+	topics := req.Topics
+	if len(topics) == 0 && req.Prompt != "" {
+		topics = []string{req.Prompt}
+	}
 	runID := uuid.NewString()
-	if err := s.surveyRepo.CreateRun(r.Context(), runID, req.CorpusID, req.Topics, req.Questions); err != nil {
+	if err := s.surveyRepo.CreateRun(r.Context(), runID, req.CorpusID, topics, req.Questions); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -571,8 +583,11 @@ func (s *Server) handleSurvey(w http.ResponseWriter, r *http.Request) {
 	}, workflows.SurveyBuildWorkflow, workflows.SurveyBuildInput{
 		SurveyRunID:     runID,
 		CorpusID:        req.CorpusID,
-		Topics:          req.Topics,
+		Prompt:          req.Prompt,
+		Topics:          topics,
 		Questions:       req.Questions,
+		OutputFormat:    req.OutputFormat,
+		RetrievalTopK:   req.RetrievalTopK,
 		EmbedProviders:  s.providers.EmbedCount(),
 		LLMProviders:    s.providers.LLMCount(),
 		LLMProviderRefs: providerRawRefs(s.providers.LLMProviderRefs()),
@@ -621,7 +636,7 @@ func (s *Server) handleSurveyScoped(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if outPath == "" {
-			writeJSON(w, http.StatusOK, map[string]any{"status": status, "report_markdown": ""})
+			writeJSON(w, http.StatusOK, map[string]any{"status": status, "report_text": "", "report_markdown": "", "output_format": "unknown"})
 			return
 		}
 		b, err := os.ReadFile(outPath)
@@ -629,7 +644,39 @@ func (s *Server) handleSurveyScoped(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"status": status, "report_markdown": string(b), "path": outPath})
+		format := strings.TrimPrefix(strings.ToLower(filepath.Ext(outPath)), ".")
+		writeJSON(w, http.StatusOK, map[string]any{"status": status, "report_text": string(b), "report_markdown": string(b), "path": outPath, "output_format": format})
+	case "download":
+		if r.Method != http.MethodGet {
+			writeErr(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+			return
+		}
+		outPath, status, err := s.surveyRepo.GetRunPath(r.Context(), runID)
+		if err != nil {
+			writeErr(w, http.StatusNotFound, err)
+			return
+		}
+		if outPath == "" || status != "completed" {
+			writeErr(w, http.StatusNotFound, fmt.Errorf("survey output not ready"))
+			return
+		}
+		b, err := os.ReadFile(outPath)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		ext := strings.ToLower(filepath.Ext(outPath))
+		contentType := "text/plain; charset=utf-8"
+		if ext == ".tex" {
+			contentType = "text/x-tex; charset=utf-8"
+		} else if ext == ".md" {
+			contentType = "text/markdown; charset=utf-8"
+		}
+		filename := fmt.Sprintf("survey-%s%s", runID, ext)
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(b)
 	default:
 		writeErr(w, http.StatusNotFound, fmt.Errorf("not found"))
 	}

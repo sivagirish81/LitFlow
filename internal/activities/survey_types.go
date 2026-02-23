@@ -32,10 +32,28 @@ type SearchChunksOutput struct {
 	Results []SearchChunk `json:"results"`
 }
 
+type SurveyPaperMeta struct {
+	PaperID  string `json:"paper_id"`
+	Title    string `json:"title,omitempty"`
+	Authors  string `json:"authors,omitempty"`
+	Year     int    `json:"year,omitempty"`
+	Filename string `json:"filename,omitempty"`
+}
+
+type GetSurveyPaperMetaInput struct {
+	CorpusID string   `json:"corpus_id"`
+	PaperIDs []string `json:"paper_ids"`
+}
+
+type GetSurveyPaperMetaOutput struct {
+	Papers []SurveyPaperMeta `json:"papers"`
+}
+
 type WriteSurveyReportInput struct {
-	CorpusID    string `json:"corpus_id"`
-	SurveyRunID string `json:"survey_run_id"`
-	Report      string `json:"report"`
+	CorpusID     string `json:"corpus_id"`
+	SurveyRunID  string `json:"survey_run_id"`
+	Report       string `json:"report"`
+	OutputFormat string `json:"output_format,omitempty"`
 }
 
 type WriteSurveyReportOutput struct {

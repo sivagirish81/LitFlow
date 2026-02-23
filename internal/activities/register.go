@@ -23,6 +23,7 @@ func Register(w worker.Worker, a *Activities) {
 	w.RegisterActivity(a.UpdateSurveyRunActivity)
 	w.RegisterActivity(a.LogLLMCallActivity)
 	w.RegisterActivity(a.UpsertTopicGraphActivity)
+	w.RegisterActivity(a.GetSurveyPaperMetaActivity)
 	w.RegisterActivity(a.ListPaperChunksActivity)
 	w.RegisterActivity(a.UpsertKGTriplesActivity)
 	w.RegisterActivity(a.MarkKGPaperRunActivity)
