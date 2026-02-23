@@ -33,7 +33,9 @@ func (r *ChunkRepo) UpsertChunks(ctx context.Context, chunks []ChunkRecord) erro
 	if err != nil {
 		return fmt.Errorf("begin tx upsert chunks: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
 
 	for _, c := range chunks {
 		_, err := tx.Exec(ctx, `

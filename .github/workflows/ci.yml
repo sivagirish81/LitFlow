@@ -18,6 +18,7 @@ jobs:
     name: detect_frontend
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    needs: [go_build_test]
     outputs:
       has_frontend: ${{ steps.detect.outputs.has_frontend }}
       frontend_dir: ${{ steps.detect.outputs.frontend_dir }}
@@ -100,6 +101,7 @@ jobs:
     name: go_lint
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    needs: [go_build_test, detect_frontend]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -123,7 +125,8 @@ jobs:
     name: go_race
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs: [go_lint, frontend_build]
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && needs.go_lint.result == 'success' && (needs.frontend_build.result == 'success' || needs.frontend_build.result == 'skipped') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -155,7 +158,7 @@ jobs:
     name: frontend_build
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [detect_frontend]
+    needs: [go_build_test, detect_frontend]
     if: ${{ needs.detect_frontend.outputs.has_frontend == 'true' }}
     defaults:
       run:
