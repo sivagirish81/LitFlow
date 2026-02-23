@@ -178,7 +178,7 @@ func PaperProcessWorkflow(ctx workflow.Context, input PaperProcessInput) (string
 	status.CurrentStep = "extract_metadata"
 	status.Steps[status.CurrentStep] = "processing"
 	var metaOut activities.ExtractMetadataOutput
-	if err := workflow.ExecuteActivity(ctx, "ExtractMetadataActivity", activities.ExtractMetadataInput{Text: textOut.Text}).Get(ctx, &metaOut); err != nil {
+	if err := workflow.ExecuteActivity(ctx, "ExtractMetadataActivity", activities.ExtractMetadataInput(textOut)).Get(ctx, &metaOut); err != nil {
 		return "", err
 	}
 	status.Steps[status.CurrentStep] = "done"
@@ -501,7 +501,9 @@ func callEmbedWithFailover(ctx workflow.Context, state *providerState, providerC
 			disableProviderUntil(ctx, state, idx, cooldown)
 		case providers.ErrorRate:
 			if retryCounts[key] <= 2 {
-				workflow.Sleep(ctx, time.Duration(retryCounts[key]*2)*time.Second)
+				if err := workflow.Sleep(ctx, time.Duration(retryCounts[key]*2)*time.Second); err != nil {
+					return activities.EmbedChunksOutput{}, err
+				}
 				if !strict {
 					attempt--
 				}
@@ -510,7 +512,9 @@ func callEmbedWithFailover(ctx workflow.Context, state *providerState, providerC
 			}
 		case providers.ErrorTransient:
 			if retryCounts[key] <= 2 {
-				workflow.Sleep(ctx, time.Duration(retryCounts[key])*time.Second)
+				if err := workflow.Sleep(ctx, time.Duration(retryCounts[key])*time.Second); err != nil {
+					return activities.EmbedChunksOutput{}, err
+				}
 				if !strict {
 					attempt--
 				}
@@ -553,7 +557,9 @@ func callEmbedQueryWithFailover(ctx workflow.Context, state *providerState, prov
 			disableProviderUntil(ctx, state, idx, cooldown)
 		case providers.ErrorRate, providers.ErrorTransient:
 			if retryCounts[key] <= 2 {
-				workflow.Sleep(ctx, time.Duration(retryCounts[key])*time.Second)
+				if err := workflow.Sleep(ctx, time.Duration(retryCounts[key])*time.Second); err != nil {
+					return activities.EmbedQueryOutput{}, err
+				}
 				attempt--
 			} else {
 				disableProviderUntil(ctx, state, idx, 2*time.Minute)
@@ -606,13 +612,19 @@ func callLLMWithFailover(ctx workflow.Context, state *providerState, providerCou
 		case providers.ErrorQuota:
 			disableProviderUntil(ctx, state, idx, cooldown)
 		case providers.ErrorRate:
-			if retryCounts[key] <= 1 {
-				workflow.Sleep(ctx, 2*time.Second)
+			if retryCounts[key] <= 2 {
+				if err := workflow.Sleep(ctx, time.Duration(retryCounts[key]*2)*time.Second); err != nil {
+					return activities.LLMGenerateOutput{}, string(providers.ClassifyError(err)), err
+				}
+				attempt--
+			} else {
+				disableProviderUntil(ctx, state, idx, 2*time.Minute)
 			}
-			disableProviderUntil(ctx, state, idx, 2*time.Minute)
 		case providers.ErrorTransient:
 			if retryCounts[key] <= 2 {
-				workflow.Sleep(ctx, time.Duration(retryCounts[key])*time.Second)
+				if err := workflow.Sleep(ctx, time.Duration(retryCounts[key])*time.Second); err != nil {
+					return activities.LLMGenerateOutput{}, string(providers.ClassifyError(err)), err
+				}
 				attempt--
 			}
 		case providers.ErrorContext:

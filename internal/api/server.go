@@ -738,7 +738,7 @@ func (s *Server) handleEmbeddingProviders(w http.ResponseWriter, r *http.Request
 		default:
 			model = "unknown"
 		}
-		label := strings.Title(ref.Name)
+		label := humanizeProviderName(ref.Name)
 		if ref.KeyAlias != "" {
 			label = label + " / " + ref.KeyAlias
 		}
@@ -1124,6 +1124,14 @@ func firstSingleFile(m map[string][]*multipart.FileHeader) (*multipart.FileHeade
 		}
 	}
 	return nil, false
+}
+
+func humanizeProviderName(name string) string {
+	n := strings.TrimSpace(strings.ToLower(name))
+	if n == "" {
+		return ""
+	}
+	return strings.ToUpper(n[:1]) + n[1:]
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
