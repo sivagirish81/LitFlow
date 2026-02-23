@@ -5,7 +5,7 @@ import ReactMarkdown from "react-markdown";
 import { api } from "../../../../lib/api";
 
 export default function SurveyPage({ params }: { params: { corpusId: string } }) {
-  const [topicsRaw, setTopicsRaw] = useState("transformers, retrieval augmented generation");
+  const [topicsRaw, setTopicsRaw] = useState("");
   const [questionsRaw, setQuestionsRaw] = useState("");
   const [runId, setRunId] = useState("");
   const [progress, setProgress] = useState<Record<string, string>>({});
