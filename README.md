@@ -1,46 +1,77 @@
 # LitFlow
 
-A durable AI-powered literature survey engine that reliably processes large research corpora, builds RAG indices, and generates structured, citation-backed literature reviews with full reproducibility and crash-safe execution.
+LitFlow is an open-source **research intelligence platform** for literature ingestion, retrieval, survey generation, and knowledge graph analytics.
 
-## What it does
-- Upload real PDFs into corpora
-- Ingest PDFs via Temporal workflows (extract text, chunk, embed, upsert to Postgres+pgvector)
-- Ask corpus questions with citation evidence
-- Build topic-driven survey reports in Markdown
-- Explore a knowledge graph (papers <-> topics)
-- Run backfills (retry failed papers, regenerate surveys)
-- Re-embed entire corpora when switching embedding models/providers
+It processes real research PDFs into a durable corpus, supports citation-grounded Q&A, generates topic reports, and surfaces graph-driven insights for method lineage, competitive performance, dataset dominance, and trends.
+
+## Key Features
+- **Corpus ingestion from real PDFs** (no synthetic seed data)
+- **Temporal-native orchestration** for long-running, resumable pipelines
+- **RAG Q&A with citations**
+- **Survey builder** with Markdown reports
+- **Knowledge Graph + Research Intelligence dashboard**
+- **Backfills/reprocessing** (retry failed, re-embed, regenerate)
+- **Local-first stack** with free defaults (`mock`, local embeddings)
+
+
+### Workflow-level provider failover (not just activity retries)
+Provider switching is implemented in workflow code with deterministic policy:
+- Quota exhausted: disable provider for cooldown window, switch immediately
+- Rate-limited: bounded backoff, then short disable and switch
+- Transient: bounded retries, then switch
+- Context-too-long: reduce context and retry path
+- Permanent errors: fail step with explicit reason
+
+Failover state is tracked in workflow state (`disabledUntil`, retry counters), so behavior is durable and replay-safe.
+
+### Operational advantages over non-workflow systems
+- Fan-out/fan-in ingestion with child workflows and bounded concurrency
+- Queryable progress (`GetProgress`, `GetPaperStatus`, `GetSurveyProgress`, KG status)
+- Idempotent activities and reproducible reruns
+- Safe backfills with versioned manifests
+- Clear event history and retry/failover trace in Temporal UI
 
 ## Architecture
-- `cmd/api`: Go HTTP API (`:8080`)
-- `cmd/worker`: Go Temporal worker
-- `apps/web`: Next.js + Tailwind UI (`:3000`)
-- `docker-compose.yml`: Temporal server, Temporal UI, Postgres+pgvector
-- Local files:
-  - uploads: `./data/in/{corpusId}/...`
-  - artifacts: `./data/out/{corpusId}/...`
+- `cmd/api` - Go API server (`:8080`)
+- `cmd/worker` - Go Temporal worker
+- `apps/web` - Next.js + Tailwind UI (`:3000`)
+- `internal/workflows` - Temporal workflows (ingest, survey, backfill, KG)
+- `internal/activities` - idempotent workflow activities
+- `internal/providers` - LLM/embedding provider abstractions + parsing
+- `internal/storage` - Postgres repos
+- `internal/vector` - pgvector search
+- `internal/graph` - KG extraction, parsing, normalization
+- `migrations` - schema + pgvector + KG migrations
+- `docker-compose.yml` - Temporal, Temporal UI, Postgres
+
+## Local Stack
+Docker services:
+- Temporal server: `localhost:7233`
+- Temporal UI: `http://localhost:8233`
+- Postgres + pgvector: `localhost:5432`
+
+App services:
+- API: `http://localhost:8080`
+- Web: `http://localhost:3000`
+
+Data directories:
+- Inbound PDFs: `./data/in/{corpusId}/...`
+- Artifacts/reports/manifests: `./data/out/{corpusId}/...`
 
 ## Prerequisites
 - Docker + Docker Compose
-- Go (toolchain compatible with `go.mod`)
+- Go (compatible with `go.mod`)
 - Node.js 20+
 - npm
 
 ## Quickstart
-Create local env file first:
 ```bash
 cp .env.example .env
-```
-
-Edit `.env` and set API keys if needed.
-
-Then start infrastructure:
-```bash
 make up
 make migrate
 ```
 
-Run services in separate terminals:
+Run in separate terminals:
 ```bash
 make worker
 make api
@@ -48,15 +79,15 @@ make web
 ```
 
 Open:
-- Web app: http://localhost:3000
-- Temporal UI: http://localhost:8233
+- Web: `http://localhost:3000`
+- Temporal UI: `http://localhost:8233`
 
-Shutdown:
+Stop everything:
 ```bash
 make down
 ```
 
-## Make targets
+## Make Targets
 - `make up`
 - `make down`
 - `make migrate`
@@ -65,110 +96,97 @@ make down
 - `make web`
 - `make test`
 
-## Environment
-LitFlow now auto-loads `.env` for API/worker startup (`cmd/api`, `cmd/worker`) and Docker Compose reads `.env` automatically.
+## Configuration
+Both API and worker auto-load `.env`.
 
-Defaults are local-first and free:
-- `LITFLOW_LLM_PROVIDERS="mock|openai:keyname1|openai:keyname2"`
-- `LITFLOW_EMBED_PROVIDERS="mock|ollama:nomic|ollama:bge|openai:keyname1|openai:keyname2"` (Groq is LLM-only)
+Core provider settings:
+- `LITFLOW_LLM_PROVIDERS="mock|openai:key1|groq:key2"`
+- `LITFLOW_EMBED_PROVIDERS="mock|ollama:nomic|ollama:bge|openai:key1"`
 - `LITFLOW_PROVIDER_COOLDOWN_SECONDS=900`
+
+Embedding settings:
 - `LITFLOW_EMBED_DIM=1536`
 - `LITFLOW_EMBED_VERSION=v1`
 - `LITFLOW_CHUNK_SIZE=1200`
 - `LITFLOW_CHUNK_OVERLAP=200`
+
+Frontend API base:
 - `NEXT_PUBLIC_LITFLOW_API_BASE=http://localhost:8080`
-- `OPENAI_API_KEY=...` or alias keys like `LITFLOW_OPENAI_KEY_KEYNAME1=...`
-- `GROQ_API_KEY=...` or alias keys like `LITFLOW_GROQ_KEY_KEYNAME1=...`
-- `LITFLOW_GROQ_MODEL=llama-3.1-8b-instant`
-- `LITFLOW_OLLAMA_BASE_URL=http://localhost:11434`
-- `LITFLOW_OLLAMA_EMBED_MODEL=nomic-embed-text` (Nomic Embed, local/free via Ollama)
-- `LITFLOW_OLLAMA_EMBED_MODEL_BGE=bge-small-en-v1.5` (BGE Small EN, local/free via Ollama)
 
-Example using Groq LLM with free local embeddings:
-- `LITFLOW_LLM_PROVIDERS="mock|groq:free1"`
-- `LITFLOW_EMBED_PROVIDERS="mock"`
+Optional providers:
+- OpenAI: `OPENAI_API_KEY` or aliased `LITFLOW_OPENAI_KEY_<ALIAS>`
+- Groq: `GROQ_API_KEY` or aliased `LITFLOW_GROQ_KEY_<ALIAS>`
+- Ollama embeddings:
+  - `LITFLOW_OLLAMA_BASE_URL=http://localhost:11434`
+  - `LITFLOW_OLLAMA_EMBED_MODEL_NOMIC=nomic-embed-text`
+  - `LITFLOW_OLLAMA_EMBED_MODEL_BGE=bge-small-en-v1.5`
 
-Example using Nomic embeddings (recommended local free setup):
-- Install Ollama and pull model:
-  - `ollama pull nomic-embed-text`
-  - `ollama pull bge-small-en-v1.5`
-- Set:
-  - `LITFLOW_EMBED_PROVIDERS="ollama:nomic|ollama:bge|mock"`
-  - `LITFLOW_OLLAMA_EMBED_MODEL_NOMIC="nomic-embed-text"`
-  - `LITFLOW_OLLAMA_EMBED_MODEL_BGE="bge-small-en-v1.5"`
-  - `LITFLOW_EMBED_VERSION="nomic-v1"`
+## Core Workflows
+### `CorpusIngestWorkflow`
+- Lists PDFs from corpus input directory
+- Starts `PaperProcessWorkflow` children with concurrency limits
+- Continues despite individual paper failures
+- Exposes query: `GetProgress`
+- Writes corpus summary artifact
 
-`mock` provider is deterministic and works without tokens.
+### `PaperProcessWorkflow`
+- Computes stable `paper_id`
+- Extracts text (text PDFs only; no OCR)
+- Chunks and embeds with provider failover
+- Upserts chunks + embeddings idempotently
+- Writes per-paper artifacts and status
+- Exposes query: `GetPaperStatus`
 
-## Temporal workflows
-- `CorpusIngestWorkflow`
-  - lists PDFs
-  - fans out `PaperProcessWorkflow` child workflows with concurrency control
-  - exposes `GetProgress` query
-  - writes `./data/out/{corpusId}/corpus_summary.json`
-- `PaperProcessWorkflow`
-  - compute stable `paper_id`
-  - extract text (no OCR)
-  - chunk and embed
-  - idempotent upsert
-  - writes per-paper artifacts
-  - exposes `GetPaperStatus`
-- `SurveyBuildWorkflow`
-  - per-topic retrieval
-  - outline + section generation
-  - citation list generation
-  - writes `report.md`
-  - exposes `GetSurveyProgress`
-- `BackfillWorkflow`
-  - `RETRY_FAILED_PAPERS`
-  - `REEMBED_ALL_PAPERS`
-  - `REGENERATE_SURVEY`
-  - writes run manifest under `./data/out/{corpusId}/runs/{runId}/manifest.json`
+### `SurveyBuildWorkflow`
+- Retrieves relevant chunks per topic
+- Generates outline + sections with failover
+- Produces Markdown report + citations
+- Exposes query: `GetSurveyProgress`
 
-## Backfill API (reprocessing)
-Start a backfill run:
-
-```bash
-curl -s -X POST http://localhost:8080/backfill \
-  -H "Content-Type: application/json" \
-  -d '{
-    "corpus_id":"<CORPUS_ID>",
-    "mode":"REEMBED_ALL_PAPERS",
-    "embed_provider":"ollama:nomic",
-    "embed_version":"nomic-v1"
-  }'
-```
-
-Other modes:
+### `BackfillWorkflow`
 - `RETRY_FAILED_PAPERS`
-- `REGENERATE_SURVEY` (provide `topics` and optionally `questions`)
+- `REEMBED_ALL_PAPERS`
+- `REGENERATE_SURVEY`
+- Emits versioned run manifest
 
-## Switching embedding providers/models safely
-Use this sequence when moving from mock/openai to nomic (or between any embedding models):
+### KG Workflows
+- `KGBackfillWorkflow` (corpus-wide)
+- `KGExtractPaperWorkflow` (single paper)
 
-1. Update `.env` embedding settings:
-   - `LITFLOW_EMBED_PROVIDERS=ollama:nomic|mock`
-   - `LITFLOW_OLLAMA_EMBED_MODEL_NOMIC=nomic-embed-text`
-   - `LITFLOW_EMBED_VERSION=nomic-v1`
-2. Restart worker + API so they load new env.
-3. Run backfill mode `REEMBED_ALL_PAPERS` for each corpus.
-4. Verify progress in Temporal UI (`localhost:8233`) and inspect run manifest.
-5. Ask queries again; retrieval now uses `embedding_version=nomic-v1`.
+## Research Intelligence Dashboard
+The Knowledge Graph page provides productized insights (not query-console-first UX):
+- Overview
+- Lineage Explorer
+- Performance Matrix
+- Dataset Dominance
+- Trend Timeline
+- Full Graph (optional deep view)
 
-Interview explanation:
-- `provider` chooses how vectors are produced.
-- `embedding_version` is the retrieval contract.
-- Backfill reruns `PaperProcessWorkflow` on all papers to overwrite vectors idempotently.
-- Search and survey retrieval filter by active `embedding_version`, preventing mixed-index drift.
+## Temporal Dashboard (Observability)
+Open `http://localhost:8233`.
 
-## Reliability notes
-- Upserts use `ON CONFLICT DO UPDATE`
-- Artifact writes use temp file + atomic rename
-- Text-only PDFs supported (no OCR in MVP)
-- Provider call auditing recorded in `llm_calls`
+Recommended views:
+- Filter by workflow type:
+  - `CorpusIngestWorkflow`
+  - `PaperProcessWorkflow`
+  - `SurveyBuildWorkflow`
+  - `BackfillWorkflow`
+  - `KGBackfillWorkflow`
+  - `KGExtractPaperWorkflow`
+- Inspect event history to trace:
+  - activity retries
+  - provider failover transitions
+  - cooldown/disable behavior
+  - terminal failure causes
 
-## Verification
-Validated locally:
+## Reliability Guarantees
+- Idempotent DB upserts (`ON CONFLICT DO UPDATE`)
+- Atomic artifact writes (temp + rename)
+- Workflow-level provider failover policy
+- Audit trail for provider calls (`llm_calls`)
+- KG schema bootstrap protections for local drift
+
+## Validation
 ```bash
 go test ./...
 go build ./...
