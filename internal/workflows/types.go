@@ -26,8 +26,11 @@ type PaperProcessInput struct {
 type SurveyBuildInput struct {
 	SurveyRunID     string   `json:"survey_run_id"`
 	CorpusID        string   `json:"corpus_id"`
+	Prompt          string   `json:"prompt,omitempty"`
 	Topics          []string `json:"topics"`
 	Questions       []string `json:"questions"`
+	OutputFormat    string   `json:"output_format,omitempty"`
+	RetrievalTopK   int      `json:"retrieval_top_k,omitempty"`
 	EmbedProviders  int      `json:"embed_providers"`
 	LLMProviders    int      `json:"llm_providers"`
 	LLMProviderRefs []string `json:"llm_provider_refs,omitempty"`

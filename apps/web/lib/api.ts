@@ -48,9 +48,17 @@ export const api = {
   getProgress: (corpusId: string) => req<{ total: number; done: number; failed: number; per_paper_status: Record<string, string> }>(`/corpora/${corpusId}/progress`),
   getPapers: (corpusId: string) => req<{ papers: Array<{ paper_id: string; filename: string; title?: string; status: string; fail_reason?: string }> }>(`/corpora/${corpusId}/papers`),
   ask: (payload: { corpus_id: string; question: string; top_k?: number; embed_provider?: string; embed_version?: string }) => req<{ answer: string; citations: Array<{ ref_id: string; paper_id: string; title: string; filename?: string; paper_url?: string; chunk_id: string; snippet: string; summary?: string; score: number }>; embed_provider?: string; embed_model?: string; embed_version?: string }>("/ask", { method: "POST", body: JSON.stringify(payload) }),
-  createSurvey: (payload: { corpus_id: string; topics: string[]; questions: string[] }) => req<{ survey_run_id: string }>("/survey", { method: "POST", body: JSON.stringify(payload) }),
+  createSurvey: (payload: {
+    corpus_id: string;
+    prompt: string;
+    topics?: string[];
+    questions?: string[];
+    output_format?: "latex" | "markdown";
+    retrieval_top_k?: number;
+  }) => req<{ survey_run_id: string }>("/survey", { method: "POST", body: JSON.stringify(payload) }),
   surveyProgress: (id: string) => req<{ total_topics: number; done_topics: number; topic_status: Record<string, string> }>(`/survey/${id}/progress`),
-  surveyReport: (id: string) => req<{ status: string; report_markdown: string }>(`/survey/${id}/report`),
+  surveyReport: (id: string) =>
+    req<{ status: string; report_text: string; report_markdown?: string; output_format?: string; path?: string }>(`/survey/${id}/report`),
   graph: (corpusId: string) => req<{ nodes: Array<{ node_id: string; node_type: string; label: string }>; edges: Array<{ source_node_id: string; target_node_id: string; weight: number; edge_type: string }> }>(`/corpora/${corpusId}/graph`),
   workflowStatus: (workflowId: string, runId?: string) => req<{ workflow_id: string; run_id?: string; type: string; status: string; task_queue?: string; history_length?: number; start_time?: string; close_time?: string }>(`/workflows/status?workflow_id=${encodeURIComponent(workflowId)}${runId ? `&run_id=${encodeURIComponent(runId)}` : ""}`),
   backfill: (payload: { corpus_id: string; mode: "RETRY_FAILED_PAPERS" | "REEMBED_ALL_PAPERS" | "REGENERATE_SURVEY"; embed_provider?: string; embed_version?: string; chunk_version?: string; topics?: string[]; questions?: string[] }) =>

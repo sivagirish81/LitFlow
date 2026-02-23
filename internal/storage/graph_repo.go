@@ -46,14 +46,14 @@ ON CONFLICT (node_id) DO UPDATE SET label = EXCLUDED.label`, topicNodeID, corpus
 	}
 	_, err = r.db.Pool.Exec(ctx, `
 INSERT INTO graph_nodes(node_id, corpus_id, node_type, label, payload)
-VALUES ($1, $2::uuid, 'paper', $3, jsonb_build_object('paper_id', $4))
+VALUES ($1, $2::uuid, 'paper', $3, jsonb_build_object('paper_id', $4::text))
 ON CONFLICT (node_id) DO UPDATE SET label = EXCLUDED.label`, paperNodeID, corpusID, title, paperID)
 	if err != nil {
 		return fmt.Errorf("upsert paper node: %w", err)
 	}
 	_, err = r.db.Pool.Exec(ctx, `
 INSERT INTO graph_edges(edge_id, corpus_id, source_node_id, target_node_id, edge_type, weight, payload)
-VALUES ($1, $2::uuid, $3, $4, 'retrieved_for_topic', $5, jsonb_build_object('chunk_id', $6))
+VALUES ($1, $2::uuid, $3, $4, 'retrieved_for_topic', $5, jsonb_build_object('chunk_id', $6::text))
 ON CONFLICT (corpus_id, source_node_id, target_node_id, edge_type)
 DO UPDATE SET weight = GREATEST(graph_edges.weight, EXCLUDED.weight), payload = EXCLUDED.payload`,
 		edgeID, corpusID, paperNodeID, topicNodeID, score, chunkID)

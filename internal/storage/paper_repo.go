@@ -107,3 +107,32 @@ WHERE corpus_id=$1 AND paper_id=$2`, corpusID, paperID).
 	}
 	return p, nil
 }
+
+func (r *PaperRepo) ListPapersByIDs(ctx context.Context, corpusID string, paperIDs []string) ([]models.Paper, error) {
+	if len(paperIDs) == 0 {
+		return []models.Paper{}, nil
+	}
+	rows, err := r.db.Pool.Query(ctx, `
+SELECT paper_id, corpus_id::text, filename, COALESCE(title,''), COALESCE(authors,''), year,
+       COALESCE(abstract,''), status, COALESCE(fail_reason,''), created_at, updated_at
+FROM papers
+WHERE corpus_id=$1 AND paper_id = ANY($2)
+ORDER BY created_at DESC`, corpusID, paperIDs)
+	if err != nil {
+		return nil, fmt.Errorf("list papers by ids: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]models.Paper, 0, len(paperIDs))
+	for rows.Next() {
+		var p models.Paper
+		if err := rows.Scan(&p.PaperID, &p.CorpusID, &p.Filename, &p.Title, &p.Authors, &p.Year, &p.Abstract, &p.Status, &p.FailReason, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan paper by id: %w", err)
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate papers by ids: %w", err)
+	}
+	return out, nil
+}

@@ -333,7 +333,11 @@ func (a *Activities) SearchChunksActivity(ctx context.Context, in SearchChunksIn
 
 func (a *Activities) WriteSurveyReportActivity(ctx context.Context, in WriteSurveyReportInput) (WriteSurveyReportOutput, error) {
 	_ = ctx
-	outPath := filepath.Join(a.cfg.DataOutRoot, in.CorpusID, "surveys", in.SurveyRunID, "report.md")
+	ext := "md"
+	if strings.EqualFold(strings.TrimSpace(in.OutputFormat), "latex") {
+		ext = "tex"
+	}
+	outPath := filepath.Join(a.cfg.DataOutRoot, in.CorpusID, "surveys", in.SurveyRunID, "report."+ext)
 	if err := util.WriteTextAtomic(outPath, in.Report); err != nil {
 		return WriteSurveyReportOutput{}, err
 	}
@@ -360,6 +364,28 @@ func (a *Activities) LogLLMCallActivity(ctx context.Context, in LogLLMCallInput)
 
 func (a *Activities) UpsertTopicGraphActivity(ctx context.Context, in UpsertTopicGraphInput) error {
 	return a.graphRepo.UpsertTopicRetrieval(ctx, in.CorpusID, in.Topic, in.PaperID, in.Title, in.Score, in.ChunkID)
+}
+
+func (a *Activities) GetSurveyPaperMetaActivity(ctx context.Context, in GetSurveyPaperMetaInput) (GetSurveyPaperMetaOutput, error) {
+	papers, err := a.paperRepo.ListPapersByIDs(ctx, in.CorpusID, in.PaperIDs)
+	if err != nil {
+		return GetSurveyPaperMetaOutput{}, err
+	}
+	out := GetSurveyPaperMetaOutput{Papers: make([]SurveyPaperMeta, 0, len(papers))}
+	for _, p := range papers {
+		year := 0
+		if p.Year != nil {
+			year = *p.Year
+		}
+		out.Papers = append(out.Papers, SurveyPaperMeta{
+			PaperID:  p.PaperID,
+			Title:    p.Title,
+			Authors:  p.Authors,
+			Year:     year,
+			Filename: p.Filename,
+		})
+	}
+	return out, nil
 }
 
 func (a *Activities) ListPaperChunksActivity(ctx context.Context, in KGPaperInput) (ListPaperChunksOutput, error) {
