@@ -145,6 +145,7 @@ type LLMGenerateInput struct {
 	PaperID       string   `json:"paper_id"`
 	Prompt        string   `json:"prompt"`
 	Context       []string `json:"context"`
+	ProviderRef   string   `json:"provider_ref"`
 	ProviderIndex int      `json:"provider_index"`
 }
 

@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"sync"
 )
 
 type GraphNode struct {
@@ -23,6 +24,9 @@ type GraphEdge struct {
 
 type GraphRepo struct {
 	db *DB
+
+	kgSchemaMu       sync.Mutex
+	kgSchemaPrepared bool
 }
 
 func NewGraphRepo(db *DB) *GraphRepo {

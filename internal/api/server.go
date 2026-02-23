@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -89,6 +90,15 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/backfill", s.handleBackfill)
 	mux.HandleFunc("/providers/embeddings", s.handleEmbeddingProviders)
 	mux.HandleFunc("/workflows/status", s.handleWorkflowStatus)
+	mux.HandleFunc("/kg/backfill", s.handleKGBackfill)
+	mux.HandleFunc("/kg/query", s.handleKGQuery)
+	mux.HandleFunc("/kg/lineage", s.handleKGLineage)
+	mux.HandleFunc("/kg/intel/overview", s.handleKGIntelOverview)
+	mux.HandleFunc("/kg/intel/lineage", s.handleKGIntelLineage)
+	mux.HandleFunc("/kg/intel/performance", s.handleKGIntelPerformance)
+	mux.HandleFunc("/kg/intel/datasets", s.handleKGIntelDatasets)
+	mux.HandleFunc("/kg/intel/trends", s.handleKGIntelTrends)
+	mux.HandleFunc("/kg/papers/", s.handleKGPaperScoped)
 	return withCORS(mux)
 }
 
@@ -425,15 +435,6 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 		llmErr  error
 	)
 	generate := func(op, prompt string, ctxSnippets []string) (providers.GenerateResponse, providers.ProviderInfo, error) {
-		if groqProvider, groqRef, ok := s.providers.FindLLMProviderByName("groq"); ok {
-			resp, info, err := groqProvider.Generate(r.Context(), providers.GenerateRequest{
-				Operation: op,
-				Prompt:    prompt,
-				Context:   ctxSnippets,
-			})
-			info.Name = groqRef.Name
-			return resp, info, err
-		}
 		var (
 			resp providers.GenerateResponse
 			info providers.ProviderInfo
@@ -574,6 +575,7 @@ func (s *Server) handleSurvey(w http.ResponseWriter, r *http.Request) {
 		Questions:       req.Questions,
 		EmbedProviders:  s.providers.EmbedCount(),
 		LLMProviders:    s.providers.LLMCount(),
+		LLMProviderRefs: providerRawRefs(s.providers.LLMProviderRefs()),
 		CooldownSeconds: s.cfg.ProviderCooldownSecs,
 		EmbedVersion:    s.cfg.EmbedVersion,
 	})
@@ -687,6 +689,7 @@ func (s *Server) handleBackfill(w http.ResponseWriter, r *http.Request) {
 		PreferredEmbedProviderIndex: preferredProviderIdx,
 		StrictEmbedProvider:         strictProvider,
 		LLMProviders:                s.providers.LLMCount(),
+		LLMProviderRefs:             providerRawRefs(s.providers.LLMProviderRefs()),
 		CooldownSeconds:             s.cfg.ProviderCooldownSecs,
 	})
 	if err != nil {
@@ -784,6 +787,256 @@ func (s *Server) handleWorkflowStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleKGBackfill(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		return
+	}
+	var req struct {
+		CorpusID      string `json:"corpus_id"`
+		PromptVersion string `json:"prompt_version"`
+		ModelVersion  string `json:"model_version"`
+		MaxConcurrent int    `json:"max_concurrent"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid json: %w", err))
+		return
+	}
+	if strings.TrimSpace(req.CorpusID) == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("corpus_id is required"))
+		return
+	}
+	wfID := fmt.Sprintf("kg-backfill-%s-%d", req.CorpusID, time.Now().Unix())
+	we, err := s.temporal.ExecuteWorkflow(r.Context(), tclient.StartWorkflowOptions{
+		ID:        wfID,
+		TaskQueue: s.cfg.TemporalTaskQueue,
+	}, workflows.KGBackfillWorkflow, workflows.KGBackfillInput{
+		CorpusID:        req.CorpusID,
+		PromptVersion:   req.PromptVersion,
+		ModelVersion:    req.ModelVersion,
+		LLMProviders:    s.providers.LLMCount(),
+		LLMProviderRefs: providerRawRefs(s.providers.LLMProviderRefs()),
+		CooldownSeconds: s.cfg.ProviderCooldownSecs,
+		MaxConcurrent:   req.MaxConcurrent,
+	})
+	if err != nil {
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"workflow_id": we.GetID(),
+		"run_id":      we.GetRunID(),
+	})
+}
+
+func (s *Server) handleKGPaperScoped(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/kg/papers/"), "/"), "/")
+	if len(parts) != 2 || parts[1] != "extract" {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("not found"))
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		return
+	}
+	paperID := strings.TrimSpace(parts[0])
+	var req struct {
+		CorpusID      string `json:"corpus_id"`
+		PromptVersion string `json:"prompt_version"`
+		ModelVersion  string `json:"model_version"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid json: %w", err))
+		return
+	}
+	if strings.TrimSpace(req.CorpusID) == "" || paperID == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("corpus_id and paper_id are required"))
+		return
+	}
+	wfID := fmt.Sprintf("kg-paper-%s-%s-%d", req.CorpusID, paperID, time.Now().Unix())
+	we, err := s.temporal.ExecuteWorkflow(r.Context(), tclient.StartWorkflowOptions{
+		ID:        wfID,
+		TaskQueue: s.cfg.TemporalTaskQueue,
+	}, workflows.KGExtractPaperWorkflow, workflows.KGExtractPaperInput{
+		CorpusID:        req.CorpusID,
+		PaperID:         paperID,
+		PromptVersion:   req.PromptVersion,
+		ModelVersion:    req.ModelVersion,
+		LLMProviders:    s.providers.LLMCount(),
+		LLMProviderRefs: providerRawRefs(s.providers.LLMProviderRefs()),
+		CooldownSeconds: s.cfg.ProviderCooldownSecs,
+	})
+	if err != nil {
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"workflow_id": we.GetID(),
+		"run_id":      we.GetRunID(),
+	})
+}
+
+func (s *Server) handleKGQuery(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		return
+	}
+	var req struct {
+		CorpusID string `json:"corpus_id"`
+		Cypher   string `json:"cypher"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid json: %w", err))
+		return
+	}
+	out, err := storage.QueryCypherNeo4jHTTP(r.Context(), req.Cypher)
+	if err != nil {
+		out, err = s.graphRepo.QueryCypher(r.Context(), req.CorpusID, req.Cypher)
+	}
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleKGLineage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		return
+	}
+	corpusID := strings.TrimSpace(r.URL.Query().Get("corpus_id"))
+	methodName := strings.TrimSpace(r.URL.Query().Get("method_name"))
+	if corpusID == "" || methodName == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("corpus_id and method_name are required"))
+		return
+	}
+	nodes, edges, err := s.graphRepo.GetMethodLineage(r.Context(), corpusID, methodName)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"nodes": nodes,
+		"edges": edges,
+	})
+}
+
+func (s *Server) handleKGIntelOverview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		return
+	}
+	corpusID := strings.TrimSpace(r.URL.Query().Get("corpus_id"))
+	if corpusID == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("corpus_id is required"))
+		return
+	}
+	out, err := s.graphRepo.GetIntelOverview(r.Context(), corpusID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleKGIntelLineage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		return
+	}
+	corpusID := strings.TrimSpace(r.URL.Query().Get("corpus_id"))
+	method := strings.TrimSpace(r.URL.Query().Get("method"))
+	depth := 4
+	if v := strings.TrimSpace(r.URL.Query().Get("depth")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			depth = n
+		}
+	}
+	if corpusID == "" || method == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("corpus_id and method are required"))
+		return
+	}
+	out, err := s.graphRepo.GetIntelLineage(r.Context(), corpusID, method, depth)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleKGIntelPerformance(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		return
+	}
+	corpusID := strings.TrimSpace(r.URL.Query().Get("corpus_id"))
+	topN := 20
+	if v := strings.TrimSpace(r.URL.Query().Get("top_n")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			topN = n
+		}
+	}
+	if corpusID == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("corpus_id is required"))
+		return
+	}
+	out, err := s.graphRepo.GetIntelPerformance(r.Context(), corpusID, topN)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleKGIntelDatasets(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		return
+	}
+	corpusID := strings.TrimSpace(r.URL.Query().Get("corpus_id"))
+	topN := 10
+	if v := strings.TrimSpace(r.URL.Query().Get("top_n")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			topN = n
+		}
+	}
+	if corpusID == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("corpus_id is required"))
+		return
+	}
+	out, err := s.graphRepo.GetIntelDatasets(r.Context(), corpusID, topN)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleKGIntelTrends(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		return
+	}
+	corpusID := strings.TrimSpace(r.URL.Query().Get("corpus_id"))
+	topN := 10
+	if v := strings.TrimSpace(r.URL.Query().Get("top_n")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			topN = n
+		}
+	}
+	if corpusID == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("corpus_id is required"))
+		return
+	}
+	out, err := s.graphRepo.GetIntelTrends(r.Context(), corpusID, topN)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 func orderWithPreferredFirst(order []int, preferred int) []int {
 	if preferred < 0 {
 		return order
@@ -795,6 +1048,24 @@ func orderWithPreferredFirst(order []int, preferred int) []int {
 			continue
 		}
 		out = append(out, v)
+	}
+	return out
+}
+
+func providerRawRefs(refs []providers.ProviderRef) []string {
+	out := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		id := strings.TrimSpace(ref.Raw)
+		if id == "" {
+			id = strings.TrimSpace(ref.Name)
+			if ref.KeyAlias != "" {
+				id = id + ":" + strings.TrimSpace(ref.KeyAlias)
+			}
+		}
+		if id == "" {
+			continue
+		}
+		out = append(out, id)
 	}
 	return out
 }
@@ -924,6 +1195,8 @@ func toAPIError(status int, err error) apiError {
 	if status >= 400 && status < 500 && err != nil {
 		low := strings.ToLower(err.Error())
 		switch {
+		case strings.Contains(low, "lineage root not found"):
+			msg = "Method not found in this corpus graph. Try a method from Overview -> Top Method Families."
 		case strings.Contains(low, "name is required"):
 			msg = "Corpus name is required."
 		case strings.Contains(low, "corpus_id and question are required"):

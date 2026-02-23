@@ -39,7 +39,7 @@ func main() {
 	}
 	activities.Register(w, a)
 
-	log.Printf("litflow worker listening on %s queue=%s", cfg.TemporalAddress, cfg.TemporalTaskQueue)
+	log.Printf("litflow worker listening on %s queue=%s llm_providers=%q embed_providers=%q", cfg.TemporalAddress, cfg.TemporalTaskQueue, cfg.LLMProviders, cfg.EmbedProviders)
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		log.Fatal(err)
 	}
